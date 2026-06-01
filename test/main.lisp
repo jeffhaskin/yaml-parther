@@ -207,6 +207,114 @@ str: hello"))))
     (true (hash-table-p result) "Result is a hash-table")
     (is equal "value" (gethash "key" result) "key maps to value")))
 
+;;; ---------------------------------------------------------------------------
+;;; Block scalar tests
+;;; ---------------------------------------------------------------------------
+
+(define-test block-scalars
+  :parent yaml-parther
+  :description "Literal and folded block scalar parsing.")
+
+(define-test simple-literal-scalar
+  :parent block-scalars
+  (let ((result (yaml-parther::read-literal-scalar
+                 (yaml-parther::make-source "|
+  line1
+  line2
+"))))
+    (is equal (format nil "line1~%line2~%") result
+        "Literal preserves newlines")))
+
+(define-test simple-folded-scalar
+  :parent block-scalars
+  (let ((result (yaml-parther::read-folded-scalar
+                 (yaml-parther::make-source ">
+  line1
+  line2
+"))))
+    (is equal (format nil "line1 line2~%") result
+        "Folded converts newlines to spaces")))
+
+(define-test literal-in-mapping
+  :parent block-scalars
+  (let ((result (yaml:parse "text: |
+  line1
+  line2
+")))
+    (is equal (format nil "line1~%line2~%") (gethash "text" result)
+        "Literal scalar as mapping value")))
+
+;;; ---------------------------------------------------------------------------
+;;; Flow collection tests
+;;; ---------------------------------------------------------------------------
+
+(define-test flow-collections
+  :parent yaml-parther
+  :description "Flow sequence and mapping parsing.")
+
+(define-test empty-flow-sequence
+  :parent flow-collections
+  (let ((result (yaml:parse "[]")))
+    (true (vectorp result) "Result is a vector")
+    (is = 0 (length result) "Empty sequence has length 0")))
+
+(define-test single-item-flow-sequence
+  :parent flow-collections
+  (let ((result (yaml:parse "[1]")))
+    (true (vectorp result) "Result is a vector")
+    (is = 1 (length result) "Single item")
+    (is = 1 (aref result 0) "Item is resolved integer")))
+
+(define-test multi-item-flow-sequence
+  :parent flow-collections
+  (let ((result (yaml:parse "[1, 2, 3]")))
+    (is equalp #(1 2 3) result "Multiple items parsed correctly")))
+
+(define-test flow-sequence-with-strings
+  :parent flow-collections
+  (let ((result (yaml:parse "[a, b, c]")))
+    (is equalp #("a" "b" "c") result "String items parsed correctly")))
+
+(define-test flow-sequence-mixed-types
+  :parent flow-collections
+  (let ((result (yaml:parse "[1, true, null]")))
+    (is equalp #(1 t null) result "Mixed types resolved correctly")))
+
+(define-test nested-flow-sequence
+  :parent flow-collections
+  (let ((result (yaml:parse "[[1, 2], [3, 4]]")))
+    (true (vectorp result) "Outer is vector")
+    (is = 2 (length result) "Two nested sequences")
+    (is equalp #(1 2) (aref result 0) "First nested")
+    (is equalp #(3 4) (aref result 1) "Second nested")))
+
+(define-test empty-flow-mapping
+  :parent flow-collections
+  (let ((result (yaml:parse "{}")))
+    (true (hash-table-p result) "Result is hash-table")
+    (is = 0 (hash-table-count result) "Empty mapping")))
+
+(define-test single-pair-flow-mapping
+  :parent flow-collections
+  (let ((result (yaml:parse "{a: 1}")))
+    (true (hash-table-p result) "Result is hash-table")
+    (is = 1 (gethash "a" result) "Key maps to value")))
+
+(define-test multi-pair-flow-mapping
+  :parent flow-collections
+  (let ((result (yaml:parse "{a: 1, b: 2, c: 3}")))
+    (is = 3 (hash-table-count result) "Three entries")
+    (is = 1 (gethash "a" result) "a=1")
+    (is = 2 (gethash "b" result) "b=2")
+    (is = 3 (gethash "c" result) "c=3")))
+
+(define-test nested-flow-mapping
+  :parent flow-collections
+  (let ((result (yaml:parse "{outer: {inner: value}}")))
+    (true (hash-table-p result) "Outer is hash-table")
+    (true (hash-table-p (gethash "outer" result)) "Inner is hash-table")
+    (is equal "value" (gethash "inner" (gethash "outer" result)) "Nested value")))
+
 (defun run ()
   "Run the whole suite. Convenience entry point for `ros run`."
   (parachute:test '#:yaml-parther/test))
