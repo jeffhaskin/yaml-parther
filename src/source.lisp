@@ -7,11 +7,12 @@
 (in-package #:yaml-parther)
 
 (defstruct (source (:constructor %make-source))
-  "An input cursor over YAML text, carrying line/column position."
-  (text   "" :type string)
-  (index  0  :type fixnum)
-  (line   1  :type fixnum)
-  (column 0  :type fixnum))
+  "An input cursor over YAML text, carrying line/column position and indent context."
+  (text         "" :type string)
+  (index        0  :type fixnum)
+  (line         1  :type fixnum)
+  (column       0  :type fixnum)
+  (indent-stack nil :type list))
 
 (defun make-source (input)
   "Build a SOURCE over INPUT, which is a STRING or a character input STREAM.
@@ -74,3 +75,112 @@ Returns the number of characters skipped."
                    (funcall predicate (source-peek source)))
         do (source-advance source)
         finally (return count)))
+
+;;; ---------------------------------------------------------------------------
+;;; Whitespace predicates
+;;; ---------------------------------------------------------------------------
+
+(defun whitespace-p (char)
+  "Return T if CHAR is a YAML whitespace (space or tab)."
+  (and char (or (char= char #\Space) (char= char #\Tab))))
+
+(defun line-break-p (char)
+  "Return T if CHAR is a line break (LF or CR)."
+  (and char (or (char= char #\Newline) (char= char #\Return))))
+
+(defun blank-p (char)
+  "Return T if CHAR is whitespace or a line break."
+  (or (whitespace-p char) (line-break-p char)))
+
+;;; ---------------------------------------------------------------------------
+;;; Indentation context stack
+;;; ---------------------------------------------------------------------------
+
+(defun source-push-indent (source column)
+  "Push COLUMN onto the indent stack as the new required indent level."
+  (push column (source-indent-stack source)))
+
+(defun source-pop-indent (source)
+  "Pop and return the top indent level from the stack."
+  (pop (source-indent-stack source)))
+
+(defun source-current-indent (source)
+  "Return the current required indent level, or 0 if stack is empty."
+  (or (car (source-indent-stack source)) 0))
+
+(defun source-indent-depth (source)
+  "Return the number of indent levels currently on the stack."
+  (length (source-indent-stack source)))
+
+;;; ---------------------------------------------------------------------------
+;;; Indentation and line operations
+;;; ---------------------------------------------------------------------------
+
+(defun source-at-line-start-p (source)
+  "Return T if the cursor is at the start of a line (column 0)."
+  (zerop (source-column source)))
+
+(defun source-count-indent (source)
+  "Count leading spaces at current position without advancing.
+Returns the number of consecutive space characters."
+  (loop for i from 0
+        for char = (source-peek source i)
+        while (and char (char= char #\Space))
+        count t))
+
+(defun source-skip-indent (source)
+  "Skip leading spaces and return the number skipped."
+  (source-skip-while source (lambda (c) (char= c #\Space))))
+
+(defun source-check-indent (source min-indent)
+  "Return T if current indent level is at least MIN-INDENT.
+Must be called at line start."
+  (>= (source-count-indent source) min-indent))
+
+(defun source-skip-blanks (source)
+  "Skip whitespace (spaces and tabs), return the count skipped."
+  (source-skip-while source #'whitespace-p))
+
+(defun source-skip-to-eol (source)
+  "Skip to end of line (but don't consume the line break).
+Returns the number of characters skipped."
+  (source-skip-while source (lambda (c) (not (line-break-p c)))))
+
+(defun source-consume-line-break (source)
+  "Consume a line break (LF, CR, or CRLF). Returns T if consumed, NIL otherwise."
+  (let ((char (source-peek source)))
+    (cond
+      ((null char) nil)
+      ((char= char #\Newline)
+       (source-advance source)
+       t)
+      ((char= char #\Return)
+       (source-advance source)
+       (when (eql (source-peek source) #\Newline)
+         (source-advance source))
+       t)
+      (t nil))))
+
+(defun source-skip-blank-lines (source)
+  "Skip any blank lines (lines containing only whitespace).
+Returns the number of line breaks consumed."
+  (loop for count from 0
+        do (let ((start-index (source-index source)))
+             (source-skip-blanks source)
+             (unless (source-consume-line-break source)
+               (setf (source-index source) start-index)
+               (return count)))))
+
+;;; ---------------------------------------------------------------------------
+;;; Line folding primitives
+;;; ---------------------------------------------------------------------------
+
+(defun source-fold-line (source)
+  "Consume a line break for line folding. Returns :FOLD if folded, :KEEP if
+a blank line follows (which keeps the newline), or NIL if no line break."
+  (unless (source-consume-line-break source)
+    (return-from source-fold-line nil))
+  (if (or (source-eof-p source)
+          (line-break-p (source-peek source)))
+      :keep
+      :fold))
