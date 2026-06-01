@@ -28,7 +28,7 @@ Single-quoted strings only escape '' as a literal '."
       (let ((char (source-peek source)))
         (cond
           ((null char)
-           (error 'yaml-scanner-error :message "Unterminated single-quoted scalar"))
+           (yaml-parse-fail 'yaml-scanner-error source "Unterminated single-quoted scalar"))
           ((char= char #\')
            (source-advance source)
            (if (eql (source-peek source) #\')
@@ -320,6 +320,22 @@ Supports complex keys: flow collections, quoted strings, and plain scalars."
                   (source-advance source))
          (resolve-scalar (string-right-trim '(#\Space #\Tab) (coerce chars 'string))))))))
 
+(defun read-nested-value (source indent)
+  "Read a nested value at the given INDENT level. Dispatches based on first character."
+  (declare (ignore indent))
+  (let ((char (source-peek source)))
+    (cond
+      ((null char) 'null)
+      ((eql char #\-) (read-block-sequence source))
+      ((eql char #\[) (read-flow-sequence source))
+      ((eql char #\{) (read-flow-mapping source))
+      ((eql char #\') (read-single-quoted-scalar source))
+      ((eql char #\") (read-double-quoted-scalar source))
+      ((eql char #\|) (read-literal-scalar source))
+      ((eql char #\>) (read-folded-scalar source))
+      ((looks-like-mapping-key-p source) (read-block-mapping source))
+      (t (read-plain-scalar source)))))
+
 (defun read-block-mapping (source)
   "Read a block mapping from SOURCE. Returns a hash-table (test EQUAL).
 Supports both implicit keys (key: value) and explicit keys (? key : value)."
@@ -351,11 +367,23 @@ Supports both implicit keys (key: value) and explicit keys (? key : value)."
                  :message (format nil "Duplicate mapping key: ~S" key)
                  :position (source-position source)))
         (let ((anchor-name (when (eql (source-peek source) #\&)
-                             (read-anchor source))))
+                             (read-anchor source)))
+              (nested-p nil))
           (let ((value (cond
-                         ((or (source-eof-p source)
-                              (line-break-p (source-peek source)))
+                         ((source-eof-p source)
                           'null)
+                         ((line-break-p (source-peek source))
+                          (source-consume-line-break source)
+                          (source-skip-blank-lines source)
+                          (if (source-eof-p source)
+                              'null
+                              (let ((nested-indent (source-count-indent source)))
+                                (if (> nested-indent map-indent)
+                                    (progn
+                                      (setf nested-p t)
+                                      (source-skip-indent source)
+                                      (read-nested-value source nested-indent))
+                                    'null))))
                          ((eql (source-peek source) #\*)
                           (read-alias source))
                          ((eql (source-peek source) #\|)
@@ -373,10 +401,16 @@ Supports both implicit keys (key: value) and explicit keys (? key : value)."
                          (t (read-plain-scalar source)))))
             (when (and anchor-name *anchor-table*)
               (setf (gethash anchor-name *anchor-table*) value))
-            (setf (gethash key table) value)))
-        (source-skip-to-eol source)
-        (source-consume-line-break source)
-        (source-skip-blank-lines source)
+            (if (and (stringp key) (string= key "<<") (hash-table-p value))
+                (maphash (lambda (k v)
+                           (unless (nth-value 1 (gethash k table))
+                             (setf (gethash k table) v)))
+                         value)
+                (setf (gethash key table) value))
+            (unless nested-p
+              (source-skip-to-eol source)
+              (source-consume-line-break source)
+              (source-skip-blank-lines source))))
         (when (source-eof-p source)
           (return))
         (let ((new-indent (source-count-indent source)))
@@ -583,6 +617,7 @@ Returns T if content follows, NIL if at EOF."
     (cond
       ((null char) 'null)
       ((line-break-p char) 'null)
+      ((eql char #\*) (read-alias source))
       ((eql char #\[) (read-flow-sequence source))
       ((eql char #\{) (read-flow-mapping source))
       ((eql char #\') (read-single-quoted-scalar source))
