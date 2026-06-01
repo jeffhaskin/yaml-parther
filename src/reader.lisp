@@ -2072,6 +2072,29 @@ node sits on a following line, e.g. `--- !!set`)."
             ((char= c #\#) (return nil))
             (t (return t))))))))
 
+(defun stream-has-document-p (source)
+  "Without consuming a document, return T if SOURCE still contains at least one
+actual document. Skips inter-document blank/comment lines and any standalone
+`...` end markers (which close, but do not themselves create, a document); a
+stream that is then at EOF contains zero documents. Mirrors the document-count
+logic of READ-ALL-DOCUMENTS so PARSE and PARSE-ALL agree on what counts as a
+document. Restores the cursor before returning."
+  (let ((mark (source-index source))
+        (mline (source-line source))
+        (mcol (source-column source)))
+    (source-skip-whitespace-and-comments source)
+    (loop while (and (source-at-line-start-p source)
+                     (source-match-document-end source))
+          do (source-skip-blanks source)
+             (source-skip-comment source)
+             (source-consume-line-break source)
+             (source-skip-whitespace-and-comments source))
+    (let ((has (not (source-eof-p source))))
+      (setf (source-index source) mark
+            (source-line source) mline
+            (source-column source) mcol)
+      has)))
+
 (defun read-document (source)
   "Read exactly one YAML document from SOURCE, returning its native Lisp value."
   (let ((*anchor-table* (make-hash-table :test #'equal))

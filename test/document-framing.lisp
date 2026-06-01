@@ -53,9 +53,13 @@
 
 (define-test parse-empty-string
   :parent document-framing
-  :description "Empty input parses to null"
-  (is eq 'null (yaml:parse "")
-      "Empty string returns null"))
+  :description "Empty input is a zero-document stream"
+  ;; YAML 1.2: an empty stream contains ZERO documents. Single-document PARSE
+  ;; has nothing to return and must SIGNAL; PARSE-ALL yields the empty vector.
+  (fail (yaml:parse "") 'yaml:yaml-parse-error
+      "Empty string signals: no document in stream")
+  (is equalp #() (yaml:parse-all "")
+      "Empty stream is zero documents"))
 
 (define-test parse-implicit-document
   :parent document-framing

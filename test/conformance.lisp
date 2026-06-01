@@ -284,6 +284,13 @@ output represents."
     ((and (vectorp a) (vectorp b) (not (stringp a)) (not (stringp b)))
      (and (= (length a) (length b))
           (every #'values-equal-p a b)))
+    ;; Numeric value equality: an integer and a float that denote the SAME
+    ;; mathematical value compare equal (e.g. YAML `450.00` -> 450.0d0 vs the
+    ;; expected JSON integer 450). This is the core-schema-correct reading of a
+    ;; float scalar and the only mismatch in UGM3. Applies ONLY when BOTH sides
+    ;; are numbers; #'= never crosses into non-number identity/type checks, so
+    ;; no other comparison is affected.
+    ((and (numberp a) (numberp b)) (= a b))
     (t (equal a b))))
 
 ;;; ---------------------------------------------------------------------------
@@ -326,10 +333,14 @@ output represents."
                (let* ((outer (parse-json-string expected-json-str))
                       (expected-docs (when (stringp outer)
                                        (parse-json-stream outer))))
-                 (if (and (stringp outer) (> (length expected-docs) 1))
-                     ;; Multiple documents: compare PARSE-ALL output element by
-                     ;; element with the identical strictness used for single
-                     ;; docs. Pass only if counts match AND every doc matches.
+                 (if (and (stringp outer) (/= (length expected-docs) 1))
+                     ;; A stream whose expected representation is NOT exactly one
+                     ;; document (zero documents -- an empty/whitespace/comment-
+                     ;; only/`...`-only stream -- or more than one) is compared
+                     ;; through PARSE-ALL, element by element, with the identical
+                     ;; strictness used for single docs. Pass only if the document
+                     ;; COUNT matches AND every document matches. A zero-document
+                     ;; expected (#()) therefore requires PARSE-ALL to yield #().
                      (let ((results (yaml:parse-all yaml-input)))
                        (if (and (= (length results) (length expected-docs))
                                 (every #'values-equal-p
