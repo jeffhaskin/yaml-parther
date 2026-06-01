@@ -23,7 +23,6 @@
                (:file "resolve")
                (:file "tags")
                (:file "reader")
-               (:file "emit")
                (:file "api"))
   :in-order-to ((test-op (test-op #:yaml-parther/test))))
 

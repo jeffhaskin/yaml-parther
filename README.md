@@ -1,8 +1,9 @@
 # yaml-parther
 
-A from-scratch, **zero-dependency YAML 1.2 parser and emitter** for Common Lisp.
+A from-scratch, **zero-dependency YAML 1.2 parser** for Common Lisp.
 
-The parser is the primary concern; the emitter is secondary. Aim is full
+The parser is the V1 concern; the **emitter is deferred to V2** (not part of
+this codebase yet). Aim is full
 [YAML 1.2](https://yaml.org/spec/1.2.2/) conformance, verified against the
 official [yaml-test-suite](https://github.com/yaml/yaml-test-suite).
 
@@ -37,8 +38,7 @@ src/
   reader.lisp      fused lex+parse+compose+construct (the whole input side)
   resolve.lisp     scalar text -> native Lisp value (core schema)
   tags.lisp        %TAG handles + shorthand expansion
-  emit.lisp        the whole output side
-  api.lisp         the public facade (parse / parse-all / emit / ...)
+  api.lisp         the public facade (parse / parse-all / parse-file)
 test/              Parachute suite + conformance runner (see docs/adr)
 ```
 

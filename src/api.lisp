@@ -1,7 +1,7 @@
 ;;;; api.lisp --- The public facade.
 ;;;;
 ;;;; The one sanctioned thin layer: it wires input handling to the reader and
-;;;; emit modules and defines the user-facing contract. Every function signals
+;;;; defines the user-facing contract. Every function signals
 ;;;; a subclass of YAML-ERROR on failure -- never a sentinel return value.
 ;;;;
 ;;;; Skeleton only -- the verbs are stubs that signal until implemented.
@@ -51,15 +51,3 @@ Lisp values (one per document)."
   "Open PATHNAME and PARSE its contents."
   (declare (ignore pathname external-format allow-multiple-documents))
   (error "PARSE-FILE is not yet implemented."))
-
-(defun emit (value &key stream)
-  "Emit native Lisp VALUE as YAML. When STREAM is NIL, return a fresh string;
-otherwise write to STREAM and return VALUE."
-  (if stream
-      (progn (emit-document value stream) value)
-      (with-output-to-string (s)
-        (emit-document value s))))
-
-(defun emit-to-string (value)
-  "Emit native Lisp VALUE as a YAML string."
-  (emit value :stream nil))

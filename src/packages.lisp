@@ -12,8 +12,6 @@
    #:parse
    #:parse-all
    #:parse-file
-   #:emit
-   #:emit-to-string
    ;; --- failure taxonomy (conditions.lisp) ---
    #:yaml-error
    #:yaml-error-message

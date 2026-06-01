@@ -15,14 +15,6 @@
   :parent yaml-parther
   (true t "Parachute harness loads and runs."))
 
-(define-test emit-works
-  :parent yaml-parther
-  :description "Emit produces YAML output."
-  (is string= "42
-" (yaml:emit 42) "Emit integer")
-  (is string= "hello
-" (yaml:emit "hello") "Emit string"))
-
 ;;; ---------------------------------------------------------------------------
 ;;; Scalar resolution tests (core schema)
 ;;; ---------------------------------------------------------------------------
