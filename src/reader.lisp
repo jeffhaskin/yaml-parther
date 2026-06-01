@@ -156,6 +156,39 @@ Returns a vector of items."
     (coerce items 'vector)))
 
 ;;; ---------------------------------------------------------------------------
+;;; Literal block scalar reading
+;;; ---------------------------------------------------------------------------
+
+(defun read-literal-scalar (source)
+  "Read a literal block scalar (|) from SOURCE. Preserves newlines.
+Expects cursor at '|'."
+  (unless (eql (source-peek source) #\|)
+    (error 'yaml-scanner-error :message "Expected '|' for literal scalar"))
+  (source-advance source)
+  (source-skip-blanks source)
+  (source-consume-line-break source)
+  (let ((content-indent (source-count-indent source))
+        (chars (make-array 0 :element-type 'character :adjustable t :fill-pointer 0)))
+    (when (zerop content-indent)
+      (return-from read-literal-scalar ""))
+    (loop
+      (when (source-eof-p source)
+        (return))
+      (let ((line-indent (source-count-indent source)))
+        (when (and (< line-indent content-indent)
+                   (not (line-break-p (source-peek source))))
+          (return))
+        (source-skip-indent source)
+        (loop for char = (source-peek source)
+              while (and char (not (line-break-p char)))
+              do (vector-push-extend char chars)
+                 (source-advance source))
+        (vector-push-extend #\Newline chars)
+        (unless (source-consume-line-break source)
+          (return))))
+    (coerce chars 'string)))
+
+;;; ---------------------------------------------------------------------------
 ;;; Block mapping reading
 ;;; ---------------------------------------------------------------------------
 
@@ -202,6 +235,60 @@ Returns a vector of items."
             (return))
           (source-skip-indent source))))
     table))
+
+;;; ---------------------------------------------------------------------------
+;;; Directive parsing
+;;; ---------------------------------------------------------------------------
+
+(defun parse-yaml-directive (source)
+  "Parse a %YAML version directive. Returns (MAJOR . MINOR) version cons.
+Expects cursor to be at the '%' of '%YAML'."
+  (unless (source-match source "%YAML")
+    (error 'yaml-directive-error :message "Expected %YAML directive"))
+  (source-skip-blanks source)
+  (let ((major-chars (make-array 0 :element-type 'character :adjustable t :fill-pointer 0))
+        (minor-chars (make-array 0 :element-type 'character :adjustable t :fill-pointer 0)))
+    (loop for char = (source-peek source)
+          while (and char (digit-char-p char))
+          do (vector-push-extend char major-chars)
+             (source-advance source))
+    (unless (eql (source-peek source) #\.)
+      (error 'yaml-directive-error :message "Expected '.' in YAML version"))
+    (source-advance source)
+    (loop for char = (source-peek source)
+          while (and char (digit-char-p char))
+          do (vector-push-extend char minor-chars)
+             (source-advance source))
+    (when (zerop (length major-chars))
+      (error 'yaml-directive-error :message "Missing major version in %YAML"))
+    (when (zerop (length minor-chars))
+      (error 'yaml-directive-error :message "Missing minor version in %YAML"))
+    (cons (parse-integer (coerce major-chars 'string))
+          (parse-integer (coerce minor-chars 'string)))))
+
+(defun parse-tag-directive (source)
+  "Parse a %TAG directive. Returns (HANDLE . PREFIX) cons.
+Expects cursor to be at the '%' of '%TAG'.
+Handle is like !yaml!, !!, or !e!. Prefix is a URI prefix."
+  (unless (source-match source "%TAG")
+    (error 'yaml-directive-error :message "Expected %TAG directive"))
+  (source-skip-blanks source)
+  (let ((handle (make-array 0 :element-type 'character :adjustable t :fill-pointer 0))
+        (prefix (make-array 0 :element-type 'character :adjustable t :fill-pointer 0)))
+    (unless (eql (source-peek source) #\!)
+      (error 'yaml-directive-error :message "Tag handle must start with !"))
+    (vector-push-extend (source-advance source) handle)
+    (loop for char = (source-peek source)
+          while (and char (not (whitespace-p char)))
+          do (vector-push-extend char handle)
+             (source-advance source))
+    (source-skip-blanks source)
+    (loop for char = (source-peek source)
+          while (and char (not (whitespace-p char)) (not (line-break-p char)))
+          do (vector-push-extend char prefix)
+             (source-advance source))
+    (cons (coerce handle 'string)
+          (coerce prefix 'string))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Document reading
