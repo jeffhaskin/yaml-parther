@@ -35,3 +35,7 @@
 2026-06-01T04:54:40.108405Z  INFO created proactive database backup primary=/home/ubuntu/.local/share/mcp-agent-mail/git_mailbox_repo/storage.sqlite3 backup=/home/ubuntu/.local/share/mcp-agent-mail/git_mailbox_repo/storage.sqlite3.bak replaced_existing=true
 2026-06-01T05:10:46.741274Z  INFO archive maintenance completed git_dir=/home/ubuntu/.local/share/mcp-agent-mail/git_mailbox_repo/.git loose_before=0 loose_after=0 removed=0 packs_before=2 packs_after=2 bytes_reclaimed=0
 2026-06-01T05:14:49.208306Z  INFO integrity guard: periodic full integrity check passed
+2026-06-01T05:40:50.793784Z  INFO archive maintenance completed git_dir=/home/ubuntu/.local/share/mcp-agent-mail/git_mailbox_repo/.git loose_before=0 loose_after=0 removed=0 packs_before=2 packs_after=2 bytes_reclaimed=0
+2026-06-01T05:55:52.094106Z  INFO created proactive database backup primary=/home/ubuntu/.local/share/mcp-agent-mail/git_mailbox_repo/storage.sqlite3 backup=/home/ubuntu/.local/share/mcp-agent-mail/git_mailbox_repo/storage.sqlite3.bak replaced_existing=true
+2026-06-01T06:00:57.915833Z  WARN ATC operator tick exceeded configured budget duration_micros=289628 kernel_micros=9212 outer_loop_overhead_micros=280416 budget_micros=5000
+2026-06-01T06:10:54.456149Z  INFO archive maintenance completed git_dir=/home/ubuntu/.local/share/mcp-agent-mail/git_mailbox_repo/.git loose_before=0 loose_after=0 removed=0 packs_before=2 packs_after=2 bytes_reclaimed=0

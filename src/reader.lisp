@@ -26,6 +26,17 @@ a continuation line below it signals a structure error.")
 reach. Set when a flow collection is entered from block context; a continuation
 line at or below it is an under-indentation error.")
 
+(defvar *root-on-marker-line* nil
+  "Bound non-NIL when a document's root node begins on the same line as its
+`---` start marker. A block collection that starts there is anchored at the
+document root (column 0): any continuation line indented past column 0 is
+over-indented and malformed (yaml-test-suite 9KBC).")
+
+(defvar *in-explicit-entry* nil
+  "Bound non-NIL while reading the key or value node of an explicit `?`/`:`
+mapping entry. A nested single-line mapping is legitimate there, so the
+same-line trailing-`:` malformed-content check is suppressed.")
+
 (defvar *pending-tag* nil
   "When non-NIL, the resolved tag URI that applies to the next scalar node being
 read. Bound by the node-property readers around the scalar's read so the scalar
@@ -64,6 +75,15 @@ Returns T on success (a break was folded), NIL at EOF before content."
       (unless (source-consume-line-break source)
         (return))
       (incf breaks)
+      ;; A quoted-scalar continuation line may not begin with a tab when the
+      ;; scalar sits in an indented (block) context: its leading indentation must
+      ;; be spaces (yaml-test-suite DK95/01). A tab following spaces is folded
+      ;; content (DK95/02), and a root-context quoted scalar with no indentation
+      ;; requirement folds a leading tab as content (7A4E/PRH3).
+      (when (and *quoted-min-indent* (> *quoted-min-indent* 0)
+                 (eql (source-peek source) #\Tab))
+        (yaml-parse-fail 'yaml-scanner-error source
+                         "Tab character used as indentation"))
       (source-skip-blanks source)
       ;; A document marker line may not appear inside a quoted scalar.
       (when (looks-like-document-marker source)
@@ -331,6 +351,17 @@ Returns the resolved native value."
 ;;; Block sequence reading
 ;;; ---------------------------------------------------------------------------
 
+(defun block-construct-here-p (source)
+  "Return T if the cursor sits at the start of a nested block construct: a `-`
+sequence entry, an explicit `?` key, or a `key:` block-mapping entry. Used to
+decide whether a preceding tab is being (illegally) used as indentation."
+  (let ((c (source-peek source)))
+    (and c
+         (or (and (or (char= c #\-) (char= c #\?))
+                  (let ((n (source-peek source 1)))
+                    (or (null n) (whitespace-p n) (line-break-p n))))
+             (looks-like-mapping-key-p source)))))
+
 (defun read-block-sequence (source)
   "Read a block sequence from SOURCE. Expects to start at a '- ' indicator.
 Returns a vector of items."
@@ -346,14 +377,38 @@ Returns a vector of items."
         (return))
       (let ((dash-col (source-column source))
             (consumed-newline-p nil)
-            (flow-item-p nil))
+            (flow-item-p nil)
+            (sep-has-tab nil))
         (source-advance source)
-        (source-skip-blanks source)
+        ;; Record whether the separation after `-` contains a tab. A tab is fine
+        ;; before an inline scalar (`- \tfoo`), but if it precedes a nested block
+        ;; construct (another `-`, or an explicit `?` key) it is being used as
+        ;; indentation, which is forbidden (yaml-test-suite Y79Y/04, Y79Y/05).
+        (loop for c = (source-peek source)
+              while (and c (whitespace-p c))
+              do (when (char= c #\Tab) (setf sep-has-tab t))
+                 (source-advance source))
+        (when (and sep-has-tab
+                   (let ((c (source-peek source)))
+                     (and c
+                          (or (and (char= c #\-)
+                                   (let ((n (source-peek source 1)))
+                                     (or (null n) (whitespace-p n) (line-break-p n))))
+                              (and (char= c #\?)
+                                   (let ((n (source-peek source 1)))
+                                     (or (null n) (whitespace-p n) (line-break-p n))))))))
+          (yaml-parse-fail 'yaml-scanner-error source
+                           "Tab character used as indentation"))
         (let ((item (cond
                       ((source-eof-p source)
                        'null)
-                      ((line-break-p (source-peek source))
+                      ;; A comment after `-` (`- # comment`) means the item node
+                      ;; sits on a following, more-indented line, exactly as a
+                      ;; bare line break would.
+                      ((or (line-break-p (source-peek source))
+                           (eql (source-peek source) #\#))
                        (setf consumed-newline-p t)
+                       (source-skip-comment source)
                        (source-consume-line-break source)
                        (source-skip-blank-lines source)
                        (if (source-eof-p source)
@@ -480,9 +535,7 @@ malformed header. Consumes through the trailing line break."
           (c (source-peek source)))
       (when (and c (not (line-break-p c))
                  ;; A comment must be separated by whitespace.
-                 (not (and (char= c #\#) (> blanks 0)))
-                 ;; U+220E is the test-suite's literal end-of-stream marker.
-                 (char/= c #\∎))
+                 (not (and (char= c #\#) (> blanks 0))))
         (yaml-parse-fail 'yaml-scanner-error source
                          "Invalid block scalar header indicator")))
     (source-skip-comment source)
@@ -506,6 +559,8 @@ must be more indented than it. Handles indent/chomping indicators per YAML 1.2."
     (let ((content-indent (when explicit-indent (+ parent-indent explicit-indent)))
           (lines '())            ; reversed list of (indent-stripped) content lines
           (leading-empties 0)
+          (max-leading-empty-spaces 0) ; widest indentation among leading blank lines
+          (auto-indent (null explicit-indent))
           (seen-content nil))
       ;; Phase 1: collect lines, auto-detecting indent from first non-empty line.
       (loop
@@ -519,9 +574,19 @@ must be more indented than it. Handles indent/chomping indicators per YAML 1.2."
               ;; Empty / whitespace-only line.
               ((or (null after) (line-break-p after))
                (if seen-content
-                   (push :empty lines)
+                   ;; A blank line indented past the content-indent keeps its
+                   ;; extra spaces as content (e.g. the ` ` between paragraphs of
+                   ;; a literal block); a blank line at or below content-indent
+                   ;; is a true empty line (yaml-test-suite DWX9/T26H).
+                   (if (and content-indent (> spaces content-indent))
+                       (push (make-string (- spaces content-indent)
+                                          :initial-element #\Space)
+                             lines)
+                       (push :empty lines))
                    (progn
                      (incf leading-empties)
+                     (when (> spaces max-leading-empty-spaces)
+                       (setf max-leading-empty-spaces spaces))
                      ;; A leading empty line more indented than detected content
                      ;; is tracked; if it exceeds content-indent the extra is
                      ;; content. We approximate by recording the spaces only when
@@ -535,7 +600,14 @@ must be more indented than it. Handles indent/chomping indicators per YAML 1.2."
               (t
                ;; Non-empty line. Establish content-indent if not yet known.
                (unless content-indent
-                 (setf content-indent (max spaces (1+ parent-indent))))
+                 (setf content-indent (max spaces (1+ parent-indent)))
+                 ;; With auto-detected indentation, a preceding leading empty
+                 ;; line may not be more indented than the first non-empty
+                 ;; content line; doing so makes the indentation ambiguous and
+                 ;; is a malformed block scalar (yaml-test-suite 5LLU/W9L4).
+                 (when (and auto-indent (> max-leading-empty-spaces content-indent))
+                   (yaml-parse-fail 'yaml-scanner-error source
+                                    "Leading empty line more indented than block scalar content")))
                (when (< spaces content-indent)
                  ;; Dedent: scalar ends here.
                  (return))
@@ -672,14 +744,20 @@ core schema."
       ((eql char #\') (read-single-quoted-scalar source))
       ((eql char #\") (read-double-quoted-scalar source))
       (t
-       (let ((chars (make-array 0 :element-type 'character :adjustable t :fill-pointer 0)))
+       (let ((chars (make-array 0 :element-type 'character :adjustable t :fill-pointer 0))
+             (prev nil))
          (loop for c = (source-peek source)
                while (and c
                           (not (line-break-p c))
+                          ;; A `#` preceded by whitespace begins a comment and
+                          ;; ends the plain key (`foo # bar` -> key `foo`).
+                          (not (and (char= c #\#)
+                                    (or (null prev) (whitespace-p prev))))
                           (not (and (char= c #\:)
                                     (let ((n (source-peek source 1)))
                                       (or (null n) (whitespace-p n) (line-break-p n))))))
                do (vector-push-extend c chars)
+                  (setf prev c)
                   (source-advance source))
          (apply-scalar-tag (string-right-trim '(#\Space #\Tab) (coerce chars 'string))))))))
 
@@ -689,14 +767,27 @@ Supports complex keys: block sequences/scalars on a following line, flow
 collections, quoted strings, node properties, and plain scalars."
   (let ((q-indent (source-current-line-indent source)))
     (source-advance source) ; consume '?'
-    (source-skip-blanks source)
+    ;; A tab in the separation after `?` that precedes a nested block construct
+    ;; (a `-` sequence, a nested `?`, or a `key:` mapping) is a tab used as
+    ;; indentation, which is forbidden (yaml-test-suite Y79Y/06, Y79Y/08).
+    (let ((sep-has-tab nil))
+      (loop for c = (source-peek source)
+            while (and c (whitespace-p c))
+            do (when (char= c #\Tab) (setf sep-has-tab t))
+               (source-advance source))
+      (when (and sep-has-tab (block-construct-here-p source))
+        (yaml-parse-fail 'yaml-scanner-error source
+                         "Tab character used as indentation")))
   (let ((char (source-peek source)))
     (cond
       ((eql char #\:)
        'null)
       ;; The key node sits on the following, more-indented line(s): a block
-      ;; sequence, block scalar, or block mapping.
-      ((or (null char) (line-break-p char))
+      ;; sequence, block scalar, or block mapping. A comment may follow the `?`
+      ;; on its own line (`? # comment`), in which case the key node likewise
+      ;; sits on the following line.
+      ((or (null char) (line-break-p char) (eql char #\#))
+       (source-skip-comment source)
        (source-consume-line-break source)
        (source-skip-blank-and-comment-lines source)
        (if (source-eof-p source)
@@ -780,6 +871,17 @@ Registers the anchor and returns the value."
                    (let ((nested (source-count-indent source)))
                      (if (> nested indent)
                          (progn (source-skip-indent source)
+                                ;; A node may carry at most one anchor. If this
+                                ;; property block already supplied an anchor and
+                                ;; the node on the following line is itself a
+                                ;; bare anchored scalar (`&a\n  &b scalar`), both
+                                ;; anchors target the same node, which is invalid
+                                ;; (yaml-test-suite 4JVG).
+                                (when (and anchor
+                                           (eql (source-peek source) #\&)
+                                           (not (looks-like-mapping-key-p source)))
+                                  (yaml-parse-fail 'yaml-structure-error source
+                                                   "Node carries more than one anchor"))
                                 (let ((*pending-tag* tag))
                                   (read-nested-value source nested)))
                          (if (equal tag "tag:yaml.org,2002:str") "" 'null)))))
@@ -877,6 +979,11 @@ Supports both implicit keys (key: value) and explicit keys (? key : value)."
   (let ((table (make-hash-table :test #'equal))
         (map-indent (source-column source))
         (saw-explicit nil)
+        ;; A mapping that begins on a `---` marker line is anchored at the
+        ;; document root: it may only occupy that one line. The flag is consumed
+        ;; here so nested collections do not inherit it.
+        (root-marker-p *root-on-marker-line*)
+        (*root-on-marker-line* nil)
         (*pending-tag* nil))
     (loop named outer do
      (block iter
@@ -886,13 +993,19 @@ Supports both implicit keys (key: value) and explicit keys (? key : value)."
       ;; A document marker at the mapping indent ends the mapping.
       (when (looks-like-document-marker source)
         (return-from outer))
+      ;; A mapping that began on the `---` marker line may not continue onto a
+      ;; following line: the continuation is over-indented relative to the
+      ;; document root (yaml-test-suite 9KBC).
+      (when (and root-marker-p (> (hash-table-count table) 0))
+        (yaml-parse-fail 'yaml-structure-error source
+                         "Block mapping on document-start line cannot continue"))
       ;; --- Explicit key (`? key` / `: value`) --------------------------------
       (when (and (eql (source-peek source) #\?)
                  (let ((n (source-peek source 1)))
                    (or (null n) (whitespace-p n) (line-break-p n))))
         (setf saw-explicit t)
         (let* ((key-line0 (source-line source))
-               (key (read-explicit-key source))
+               (key (let ((*in-explicit-entry* t)) (read-explicit-key source)))
                (at-line-start nil))   ; T once the cursor is parked at a fresh line
           ;; If reading the key already advanced past its line AND parked the
           ;; cursor at a dedented sibling/parent line (e.g. an empty anchored key
@@ -926,9 +1039,20 @@ Supports both implicit keys (key: value) and explicit keys (? key : value)."
                     (if had-colon
                         (progn
                           (source-advance source) ; consume :
-                          (source-skip-blanks source)
+                          ;; A tab in the separation after the explicit-value `:`
+                          ;; that precedes a nested block construct is a tab used
+                          ;; as indentation (yaml-test-suite Y79Y/07, Y79Y/09).
+                          (let ((sep-has-tab nil))
+                            (loop for c = (source-peek source)
+                                  while (and c (whitespace-p c))
+                                  do (when (char= c #\Tab) (setf sep-has-tab t))
+                                     (source-advance source))
+                            (when (and sep-has-tab (block-construct-here-p source))
+                              (yaml-parse-fail 'yaml-scanner-error source
+                                               "Tab character used as indentation")))
                           (source-skip-comment source)
-                          (let ((v (read-explicit-value source map-indent)))
+                          (let ((v (let ((*in-explicit-entry* t))
+                                     (read-explicit-value source map-indent))))
                             ;; A collection value parks at a line start.
                             (when (or (hash-table-p v)
                                       (and (vectorp v) (not (stringp v))))
@@ -976,6 +1100,13 @@ Supports both implicit keys (key: value) and explicit keys (? key : value)."
                (source-skip-blanks source)
                (return))
               (t (return)))))
+      ;; A node property (`&anchor` / `!tag`) on a mapping key that begins on the
+      ;; `---` marker line is malformed: the anchored/tagged node would have to
+      ;; start on the marker line, which is not allowed (yaml-test-suite CXX2).
+      (when (and root-marker-p (= (hash-table-count table) 0)
+                 (or key-anchor key-tagged))
+        (yaml-parse-fail 'yaml-structure-error source
+                         "Node property on mapping key on document-start line"))
       (let* ((key-quoted-p (or (eql (source-peek source) #\')
                                (eql (source-peek source) #\")))
              (key-start-line (source-line source))
@@ -1000,9 +1131,6 @@ Supports both implicit keys (key: value) and explicit keys (? key : value)."
           (when (and (> (hash-table-count table) 0)
                      (or (and (stringp key)
                               (> (length key) 0)
-                              ;; Exclude test-suite glyph markers
-                              ;; (trailing-space/newline visualisations).
-                              (not (find-if (lambda (c) (find c "␣↵∎—»")) key))
                               ;; Exclude indicator-led lines handled elsewhere.
                               (not (member (char key 0) '(#\- #\? #\:))))
                          ;; Node properties (`&anchor` / `!tag`) consumed but no
@@ -1047,7 +1175,12 @@ Supports both implicit keys (key: value) and explicit keys (? key : value)."
           (let ((value (let ((*pending-tag* val-tag)) (cond
                          ((source-eof-p source)
                           'null)
-                         ((line-break-p (source-peek source))
+                         ;; A comment after the value's node properties
+                         ;; (`key: &anchor # comment`) means the node itself sits
+                         ;; on a following line, just as a bare line break would.
+                         ((or (line-break-p (source-peek source))
+                              (and had-property (eql (source-peek source) #\#)))
+                          (source-skip-comment source)
                           (source-consume-line-break source)
                           (source-skip-blank-and-comment-lines source)
                           (if (source-eof-p source)
@@ -1057,6 +1190,17 @@ Supports both implicit keys (key: value) and explicit keys (? key : value)."
                                 (cond
                                   ((> nested-indent map-indent)
                                    (source-skip-indent source)
+                                   ;; A node may carry at most one anchor. If the
+                                   ;; value already supplied an anchor and the
+                                   ;; node on the following line is a bare
+                                   ;; anchored scalar (`k: &a\n  &b scalar`),
+                                   ;; both anchors target the same node, which is
+                                   ;; invalid (yaml-test-suite 4JVG).
+                                   (when (and anchor-name
+                                              (eql (source-peek source) #\&)
+                                              (not (looks-like-mapping-key-p source)))
+                                     (yaml-parse-fail 'yaml-structure-error source
+                                                      "Node carries more than one anchor"))
                                    (let ((v (read-nested-value source nested-indent)))
                                      ;; Collections position the cursor past
                                      ;; their content; leaf scalars leave it
@@ -1128,12 +1272,33 @@ Supports both implicit keys (key: value) and explicit keys (? key : value)."
                              (not (and (char= c #\#) (> blanks 0))))
                     (yaml-parse-fail 'yaml-structure-error source
                                      "Unexpected content after flow collection value"))))
+              ;; After a plain scalar value, a second `:` mapping indicator on the
+              ;; same line (`a: b: c: d`) is malformed: a block mapping value
+              ;; cannot itself be a bare `key: value` pair on the value line.
+              ;; This applies only to a genuine implicit `key: value` entry in a
+              ;; mapping with no explicit `?`/`:` entries (where a `:` at the
+              ;; mapping indent is an explicit-value indicator, not trailing
+              ;; content) and not while reading an explicit entry's node.
+              (unless (or quoted-value-p flow-value-p *in-explicit-entry*
+                          saw-explicit (not (stringp value)))
+                (let ((c (source-peek source)))
+                  (when (and (eql c #\:)
+                             (let ((n (source-peek source 1)))
+                               (or (null n) (whitespace-p n) (line-break-p n))))
+                    (yaml-parse-fail 'yaml-structure-error source
+                                     "Unexpected ':' after mapping value"))))
               (source-skip-to-eol source)
               (source-consume-line-break source)
               (source-skip-blank-and-comment-lines source)))))
         (when (source-eof-p source)
           (return-from outer))
         (let ((new-indent (source-count-indent source)))
+          ;; A tab in the position where a mapping continuation line's
+          ;; indentation ends (`\tb:` or `  \tb:`) is a tab used as indentation,
+          ;; which YAML forbids (yaml-test-suite 4EJS, DK95/06).
+          (when (eql (source-peek source new-indent) #\Tab)
+            (yaml-parse-fail 'yaml-scanner-error source
+                             "Tab character used as indentation"))
           (when (< new-indent map-indent)
             (return-from outer))
           (when (> new-indent map-indent)
@@ -1292,6 +1457,18 @@ begins a comment must be preceded by whitespace. Returns the line-break count."
     (when (> breaks 0)
       (let ((c (source-peek source)))
         (when (and c (not (line-break-p c)))
+          ;; A flow continuation line carrying content may not begin its
+          ;; indentation with a tab (yaml-test-suite Y79Y/03). The leading
+          ;; whitespace must be spaces; a tab as the line's first character is a
+          ;; tab used as indentation. (A tab on an otherwise-blank line is fine,
+          ;; and a leading tab before a flow open with no preceding break is also
+          ;; fine -- both leave us with breaks accounted for / no content here.)
+          (let ((line-start (- (source-index source) (source-column source))))
+            (when (and *flow-indent* (>= *flow-indent* 0)
+                       (< line-start (length (source-text source)))
+                       (char= (char (source-text source) line-start) #\Tab))
+              (yaml-parse-fail 'yaml-scanner-error source
+                               "Tab character used as indentation")))
           (when (and *flow-indent* (<= (source-column source) *flow-indent*))
             (yaml-parse-fail 'yaml-structure-error source
                              "Flow content is under-indented"))
@@ -1670,16 +1847,39 @@ Updates *yaml-version* for %YAML directives. Returns T if directives were found.
       (source-consume-line-break source))
     found))
 
+(defun content-after-properties-on-line-p (source)
+  "Without moving the cursor, scan forward over leading node properties
+(`!tag` / `&anchor`, blank-separated) on the current line and return T if any
+non-blank, non-comment content still follows them on that same line (e.g. the
+`x:` in `--- &a x: y`). Returns NIL if the properties run to end of line (the
+node sits on a following line, e.g. `--- !!set`)."
+  (let ((off 0))
+    (flet ((pk (o) (source-peek source (+ off o))))
+      (loop
+        (let ((c (pk 0)))
+          (cond
+            ((or (null c) (line-break-p c)) (return nil))
+            ((or (char= c #\!) (char= c #\&))
+             ;; Consume the property token up to whitespace / line break.
+             (loop for d = (pk 0)
+                   while (and d (not (whitespace-p d)) (not (line-break-p d)))
+                   do (incf off))
+             ;; Consume the blank separation that must follow.
+             (loop for d = (pk 0) while (and d (whitespace-p d)) do (incf off)))
+            ((char= c #\#) (return nil))
+            (t (return t))))))))
+
 (defun read-document (source)
   "Read exactly one YAML document from SOURCE, returning its native Lisp value."
   (let ((*anchor-table* (make-hash-table :test #'equal))
-        (*tag-handles* nil))
+        (*tag-handles* nil)
+        (had-start nil))
     (source-skip-whitespace-and-comments source)
     (when (source-eof-p source)
       (return-from read-document 'null))
-    (let* ((had-directives (read-directives source))
-           (had-start (progn (source-skip-whitespace-and-comments source)
-                             (source-match-document-start source))))
+    (let ((had-directives (read-directives source)))
+      (source-skip-whitespace-and-comments source)
+      (setf had-start (source-match-document-start source))
       ;; When directives are present, an explicit `---` document start is
       ;; mandatory; a missing or `...`-only follow is malformed.
       (when (and had-directives (not had-start))
@@ -1688,6 +1888,22 @@ Updates *yaml-version* for %YAML directives. Returns T if directives were found.
                :message "Directives must be followed by a '---' document start")))
     (source-skip-blanks source)
     (source-skip-comment source)
+    ;; If a `---` marker was matched and real collection content follows it on
+    ;; the SAME line (not just blanks/comment, and not merely node properties
+    ;; whose node sits on the next line), the root node begins on the marker
+    ;; line. Node properties (`!tag` / `&anchor`) on the marker line do not
+    ;; anchor a following-line collection, so they do not set the flag.
+    (let ((*root-on-marker-line*
+            (and had-start
+                 (let ((c (source-peek source)))
+                   (and c (not (line-break-p c))
+                        (if (member c '(#\! #\&))
+                            ;; Leading node properties: the flag applies only if
+                            ;; real content (a node) still follows them on this
+                            ;; same line (`--- &a x: y`), not if the node sits on
+                            ;; the next line (`--- !!set` then `? k`).
+                            (content-after-properties-on-line-p source)
+                            t))))))
     (source-consume-line-break source)
     (source-skip-whitespace-and-comments source)
     (let* ((root-flow-p (member (source-peek source) '(#\[ #\{)))
@@ -1755,11 +1971,57 @@ Updates *yaml-version* for %YAML directives. Returns T if directives were found.
                              "Content after document-end marker"))
           (setf *document-ended-explicitly* t)
           (return-from read-document content)))
-      (source-skip-to-eol source)
-      (source-consume-line-break source)
+      ;; A block construct parks the cursor at a fresh line start. Once the root
+      ;; node is complete, the only things that may follow at the document level
+      ;; are blank/comment lines, a `...` end marker, a `---` new-document start,
+      ;; or EOF. Any other content here is malformed trailing content that
+      ;; belongs to no node (e.g. `- a\n- b\ninvalid: x`). Detect it loudly
+      ;; rather than silently dropping the line. (Document markers and multi-doc
+      ;; handling fall through to the normal path below.)
+      (when (source-at-line-start-p source)
+        (let ((mark (source-index source))
+              (mline (source-line source))
+              (mcol (source-column source)))
+          (source-skip-whitespace-and-comments source)
+          (when (and (not (source-eof-p source))
+                     (not (looks-like-document-marker source)))
+            (yaml-parse-fail 'yaml-structure-error source
+                             "Trailing content after document node"))
+          (setf (source-index source) mark
+                (source-line source) mline
+                (source-column source) mcol)))
+      ;; The content node ended mid-line (a scalar with a trailing comment, say)
+      ;; or parked on the line of a document marker. Note whether the line we are
+      ;; about to consume is a `---`/`...` marker: if so, a new document (or its
+      ;; end) follows and is the caller's concern, so we do NOT treat the next
+      ;; line as trailing content. Otherwise, consume the rest of this line; any
+      ;; non-blank/comment, non-marker content on a following line belongs to no
+      ;; node and is malformed (e.g. `word1 # c\nword2`, `this\n is\n  invalid: x`).
+      (let ((on-marker (looks-like-document-marker source)))
+        (source-skip-to-eol source)
+        (let ((had-break (source-consume-line-break source)))
+          (let ((mark (source-index source))
+                (mline (source-line source))
+                (mcol (source-column source)))
+            (source-skip-whitespace-and-comments source)
+            ;; Only a scalar root node is checked here: a collection root that
+            ;; left the cursor mid-stream indicates an incompletely-parsed
+            ;; complex construct, not stray trailing content, and must not be
+            ;; mis-reported (it is the caller's / a richer parse's concern).
+            (when (and had-break (not on-marker)
+                       (or (stringp content)
+                           (not (or (hash-table-p content)
+                                    (and (vectorp content) (not (stringp content))))))
+                       (not (source-eof-p source))
+                       (not (looks-like-document-marker source)))
+              (yaml-parse-fail 'yaml-structure-error source
+                               "Trailing content after document node"))
+            (setf (source-index source) mark
+                  (source-line source) mline
+                  (source-column source) mcol))))
       (source-skip-whitespace-and-comments source)
       (setf *document-ended-explicitly* (source-match-document-end source))
-      content)))
+      content))))
 
 (defun read-all-documents (source)
   "Read every document from a (possibly multi-document) SOURCE stream,
