@@ -15,6 +15,14 @@ without regressing any case that already passes.
   int→integer, float→float, else→string.
 - Do NOT weaken or delete existing tests to make numbers go up. Do NOT edit the
   conformance harness to mask failures.
+- **NEVER rewrite a source file via the shell.** No `sed -i`, no `awk`/`perl`
+  rewrite, no reading a file's byte-length and writing it back, no `cat > file`.
+  Multibyte source WILL be truncated/corrupted that way. Edit source ONLY with
+  the Edit/Write tools, one change at a time.
+- **NEVER `git checkout` / `git reset` / `git stash` a source file.** The working
+  tree is frequently the ONLY copy of in-progress work (it is often uncommitted).
+  Reverting destroys it. If you break a file, fix it forward with Edit — do not
+  reach for git to undo.
 
 ## The loop
 1. **MEASURE (before).** From repo root `/data/projects/yaml-parther`:

@@ -11,6 +11,16 @@
     ("!" . "!"))
   "Default tag handle mappings. !! maps to the YAML core schema prefix.")
 
+(defvar *tag-handles* nil
+  "Per-document alist of (handle . prefix) accumulated from %TAG directives.
+Bound by the document reader. Handles declared here override the defaults; the
+defaults remain available for handles not redeclared.")
+
+(defun current-tag-handles ()
+  "Return the active tag-handle alist: any %TAG-declared handles take precedence,
+falling back to the default handles for !! and !."
+  (append *tag-handles* *default-tag-handles*))
+
 (defun expand-tag-shorthand (handle suffix tag-handles)
   "Expand a tag shorthand like !!str to its full URI.
 HANDLE is the tag handle (e.g., !!, !, !e!).
@@ -37,10 +47,12 @@ Returns the URI without the !< and > delimiters."
            :message "Invalid verbatim tag format"))
   (subseq string 2 (1- (length string))))
 
-(defun read-tag (source tag-handles)
+(defun read-tag (source &optional tag-handles)
   "Read a tag from SOURCE and return its expanded form.
-TAG-HANDLES is an alist from %TAG directives.
+TAG-HANDLES is an alist from %TAG directives; when NIL the active
+*TAG-HANDLES* (plus the defaults) are used.
 Handles: !!type, !handle!suffix, !local, !<verbatim>."
+  (setf tag-handles (or tag-handles (current-tag-handles)))
   (unless (eql (source-peek source) #\!)
     (return-from read-tag nil))
   (source-advance source)
@@ -70,18 +82,34 @@ Handles: !!type, !handle!suffix, !local, !<verbatim>."
                 (source-advance source))
        (expand-tag-shorthand (coerce handle 'string) (coerce suffix 'string) tag-handles))
       (t
-       (loop for char = (source-peek source)
-             while (and char (not (whitespace-p char)) (not (line-break-p char))
-                        (not (find char ",[]{}"))
-                        (not (char= char #\!)))
-             do (if (char= char #\!)
-                    (progn
-                      (vector-push-extend char handle)
-                      (source-advance source)
-                      (return))
-                    (progn
-                      (vector-push-extend char suffix)
-                      (source-advance source))))
-       (if (> (length handle) 1)
-           (expand-tag-shorthand (coerce handle 'string) (coerce suffix 'string) tag-handles)
-           (expand-tag-shorthand "!" (coerce suffix 'string) tag-handles))))))
+       ;; A named handle (`!m!suffix`) carries a closing `!` after the handle
+       ;; name; a bare local tag (`!local`) has none. Read up to whitespace, a
+       ;; flow indicator, or that closing `!`.
+       (let ((named-handle nil))
+         (loop for char = (source-peek source)
+               while (and char (not (whitespace-p char)) (not (line-break-p char))
+                          (not (find char ",[]{}")))
+               do (cond
+                    ((char= char #\!)
+                     ;; Closing `!` of a named handle: the chars read so far were
+                     ;; the handle name, not the suffix. The handle is
+                     ;; `!` + name + `!`.
+                     (loop for c across suffix do (vector-push-extend c handle))
+                     (vector-push-extend char handle)
+                     (setf (fill-pointer suffix) 0)
+                     (source-advance source)
+                     (setf named-handle t)
+                     (return))
+                    (t
+                     (vector-push-extend char suffix)
+                     (source-advance source))))
+         (when named-handle
+           ;; After the closing `!`, the remaining chars form the suffix.
+           (loop for char = (source-peek source)
+                 while (and char (not (whitespace-p char)) (not (line-break-p char))
+                            (not (find char ",[]{}")))
+                 do (vector-push-extend char suffix)
+                    (source-advance source)))
+         (if (> (length handle) 1)
+             (expand-tag-shorthand (coerce handle 'string) (coerce suffix 'string) tag-handles)
+             (expand-tag-shorthand "!" (coerce suffix 'string) tag-handles)))))))
