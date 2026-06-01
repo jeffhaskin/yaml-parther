@@ -42,6 +42,8 @@
                (:file "tags")
                (:file "quoted-scalars")
                (:file "explicit-keys")
+               (:file "complex-keys")
+               (:file "yaml-version")
                (:file "conformance-data")
                (:file "conformance"))
   :perform (test-op (op c)
