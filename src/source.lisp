@@ -242,10 +242,13 @@ consumed."
       (let ((blanks (source-skip-blanks source)))
         (cond
           ;; A `#` only begins a comment when preceded by whitespace or at the
-          ;; start of a line.
+          ;; start of a line. The preceding whitespace may have been consumed by
+          ;; a prior token (a plain scalar right-trims its trailing spaces), so
+          ;; check the actual previous character, not just the blanks skipped on
+          ;; this call (yaml-test-suite 6HB6: `[a   # c\n]`).
           ((and (eql (source-peek source) #\#)
                 (let ((p (source-peek source -1)))
-                  (or (> blanks 0) (null p) (line-break-p p))))
+                  (or (> blanks 0) (null p) (line-break-p p) (whitespace-p p))))
            (source-skip-comment source))
           ((line-break-p (source-peek source))
            (source-consume-line-break source)

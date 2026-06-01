@@ -37,6 +37,15 @@ over-indented and malformed (yaml-test-suite 9KBC).")
 mapping entry. A nested single-line mapping is legitimate there, so the
 same-line trailing-`:` malformed-content check is suppressed.")
 
+(defvar *node-indent-floor* nil
+  "When bound to an integer, the indentation of the block context that ENCLOSES
+a node-property block read on its own line. The node those properties decorate
+may be LESS indented than the property line itself (a `!tag` or `&anchor` may be
+written more-indented than the block scalar / collection it applies to), but it
+must still be indented strictly past this floor. Used by
+READ-NODE-PROPERTIES-AND-VALUE to accept such dedented nodes (yaml-test-suite
+M5C3) without swallowing a shallower sibling.")
+
 (defvar *pending-tag* nil
   "When non-NIL, the resolved tag URI that applies to the next scalar node being
 read. Bound by the node-property readers around the scalar's read so the scalar
@@ -597,6 +606,14 @@ must be more indented than it. Handles indent/chomping indicators per YAML 1.2."
                        (setf leading-empties (1- leading-empties)))))
                (source-skip-to-eol source)
                (unless (source-consume-line-break source) (return)))
+              ;; A `---`/`...` document marker at column 0 terminates the block
+              ;; scalar: document markers can never be scalar content, even when
+              ;; the scalar's content indent is 0 (a root block scalar such as
+              ;; `--- |` whose content also sits at column 0). yaml-test-suite
+              ;; W4TN / M7A3.
+              ((and (zerop spaces)
+                    (looks-like-document-marker source))
+               (return))
               (t
                ;; Non-empty line. Establish content-indent if not yet known.
                (unless content-indent
@@ -837,7 +854,12 @@ the cursor, then the node they decorate, at block INDENT. The node may sit on
 the same line or, after a line break, as a more-indented block collection.
 Registers the anchor and returns the value."
   (let ((anchor nil)
-        (tag nil))
+        (tag nil)
+        ;; Column where the property block begins. When the properties occupy
+        ;; their whole line, the node they decorate may begin on the following
+        ;; line at this same column (a bare `&anchor` on its own line decorating
+        ;; an equally-indented block collection — yaml-test-suite U3XV/9KAX).
+        (prop-col (source-column source)))
     ;; Consume any sequence of anchor/tag properties separated by blanks.
     (loop
       (cond
@@ -869,7 +891,20 @@ Registers the anchor and returns the value."
                    ;; Empty node: `!!str` forces the empty string.
                    (if (equal tag "tag:yaml.org,2002:str") "" 'null)
                    (let ((nested (source-count-indent source)))
-                     (if (> nested indent)
+                     ;; The decorated node follows on its own line. It belongs to
+                     ;; these properties when it is indented past the parent
+                     ;; context (`> indent`) OR exactly at the property block's
+                     ;; own column (`= prop-col`): a bare `&anchor` line anchors
+                     ;; the equally-indented collection beneath it. When a
+                     ;; *floor* is known (the enclosing block's indent), the node
+                     ;; may even be SHALLOWER than the property line, as long as
+                     ;; it stays strictly past that floor: a `!tag`/`&anchor`
+                     ;; written more-indented than the block scalar it decorates
+                     ;; (yaml-test-suite M5C3: `f:\n   !foo\n  >1\n value`).
+                     (if (or (> nested indent)
+                             (and (= nested prop-col) (>= prop-col 0))
+                             (and *node-indent-floor*
+                                  (> nested *node-indent-floor*)))
                          (progn (source-skip-indent source)
                                 ;; A node may carry at most one anchor. If this
                                 ;; property block already supplied an anchor and
@@ -900,30 +935,43 @@ Registers the anchor and returns the value."
 
 (defun read-nested-value (source indent)
   "Read a nested value at the given INDENT level. Dispatches based on first character."
-  (let ((char (source-peek source)))
+  (let ((char (source-peek source))
+        ;; The node-indent floor applies only to THIS node: a block scalar (its
+        ;; explicit indent indicator is relative to the floor) or a node-property
+        ;; block that decorates a dedented node. For collections, which establish
+        ;; their own indentation context, clear it so it cannot leak inward.
+        (floor *node-indent-floor*))
     (cond
       ((null char) 'null)
       ((and (or (node-properties-here-p source) (eql char #\*))
             (looks-like-mapping-key-p source))
-       (read-block-mapping source))
+       (let ((*node-indent-floor* nil)) (read-block-mapping source)))
       ((node-properties-here-p source)
        (read-node-properties-and-value source indent))
       ((eql char #\*) (read-alias source))
       ((and (eql char #\-)
             (let ((n (source-peek source 1)))
               (or (null n) (whitespace-p n) (line-break-p n))))
-       (read-block-sequence source))
-      ((eql char #\[) (let ((*flow-indent* (1- indent))) (read-flow-sequence source)))
-      ((eql char #\{) (let ((*flow-indent* (1- indent))) (read-flow-mapping source)))
+       (let ((*node-indent-floor* nil)) (read-block-sequence source)))
+      ((eql char #\[) (let ((*flow-indent* (1- indent)) (*node-indent-floor* nil)) (read-flow-sequence source)))
+      ((eql char #\{) (let ((*flow-indent* (1- indent)) (*node-indent-floor* nil)) (read-flow-mapping source)))
       ((eql char #\') (read-single-quoted-scalar source))
       ((eql char #\") (read-double-quoted-scalar source))
-      ((eql char #\|) (read-literal-scalar source (max 0 (1- indent))))
-      ((eql char #\>) (read-folded-scalar source (max 0 (1- indent))))
+      ;; A block scalar's explicit indent indicator is relative to the enclosing
+      ;; block. Normally that is `(1- indent)`, but when this block scalar was
+      ;; reached as a dedented node beneath a node-property line, the `>`/`|`
+      ;; column no longer reflects the parent; *NODE-INDENT-FLOOR* carries the
+      ;; true enclosing indent (yaml-test-suite M5C3).
+      ((eql char #\|)
+       (read-literal-scalar source (or floor (max 0 (1- indent)))))
+      ((eql char #\>)
+       (read-folded-scalar source (or floor (max 0 (1- indent)))))
       ((and (eql char #\?)
             (let ((n (source-peek source 1)))
               (or (null n) (whitespace-p n) (line-break-p n))))
-       (read-block-mapping source))
-      ((looks-like-mapping-key-p source) (read-block-mapping source))
+       (let ((*node-indent-floor* nil)) (read-block-mapping source)))
+      ((looks-like-mapping-key-p source)
+       (let ((*node-indent-floor* nil)) (read-block-mapping source)))
       (t (read-plain-scalar source indent)))))
 
 (defun read-explicit-value (source map-indent)
@@ -1201,7 +1249,8 @@ Supports both implicit keys (key: value) and explicit keys (? key : value)."
                                               (not (looks-like-mapping-key-p source)))
                                      (yaml-parse-fail 'yaml-structure-error source
                                                       "Node carries more than one anchor"))
-                                   (let ((v (read-nested-value source nested-indent)))
+                                   (let ((v (let ((*node-indent-floor* map-indent))
+                                              (read-nested-value source nested-indent))))
                                      ;; Collections position the cursor past
                                      ;; their content; leaf scalars leave it
                                      ;; on the trailing line, so let the
@@ -1958,6 +2007,24 @@ node sits on a following line, e.g. `--- !!set`)."
           (setf (source-index source) mark
                 (source-line source) mline
                 (source-column source) mcol)))
+      ;; The content node parked at a line start that is itself a `---`
+      ;; directives-end marker: this document is complete and the next document
+      ;; begins at that marker. Return now without consuming it, so the caller
+      ;; (READ-ALL-DOCUMENTS) sees and counts the following document. (Without
+      ;; this, the trailing-content handling below would SKIP-TO-EOL over the
+      ;; marker line and silently swallow the next document — e.g. `---\n---\n`
+      ;; would yield one document instead of two.)
+      (let ((mark (source-index source))
+            (mline (source-line source))
+            (mcol (source-column source)))
+        (when (and (source-at-line-start-p source)
+                   (source-match-document-start source))
+          ;; SOURCE-MATCH-DOCUMENT-START consumed the `---`; restore the saved
+          ;; position so the marker remains for the next READ-DOCUMENT.
+          (setf (source-index source) mark
+                (source-line source) mline
+                (source-column source) mcol)
+          (return-from read-document content)))
       ;; A `...` document-end marker on the line the content node ended at must
       ;; be honoured here (not skipped as trailing content), and nothing but
       ;; blanks/comment may follow it on that line (`... invalid` is malformed).
@@ -2025,29 +2092,41 @@ node sits on a following line, e.g. `--- !!set`)."
 
 (defun read-all-documents (source)
   "Read every document from a (possibly multi-document) SOURCE stream,
-returning a vector of native Lisp values."
+returning a vector of native Lisp values.
+
+Document boundaries follow YAML 1.2: a `---` directives-end marker begins a new
+document, a `...` document-end marker terminates the current one, and directives
+(`%YAML` / `%TAG`) introduce a fresh document. Each document is read by the same
+full-fidelity READ-DOCUMENT used for single-document parsing, so all framing,
+anchoring and trailing-content rules apply identically per document. The reliable
+document count is therefore the number of READ-DOCUMENT calls that consumed real
+input."
   (let ((docs (make-array 0 :adjustable t :fill-pointer 0)))
     (loop
-      (source-skip-whitespace-and-comments source)
-      (when (source-eof-p source)
-        (return))
-      (let ((*anchor-table* (make-hash-table :test #'equal))
-            (*tag-handles* nil))
-        (read-directives source)
+      (let ((*document-ended-explicitly* nil))
+        ;; Skip inter-document blank lines and comments. What remains is either
+        ;; EOF, a `...` end marker left by the previous document, a `---` start
+        ;; marker, a directive, or the first content of a bare document.
         (source-skip-whitespace-and-comments source)
-        (let ((had-start (source-match-document-start source)))
-        (declare (ignore had-start))
-        (source-skip-blanks source)
-        (source-skip-comment source)
-        (source-consume-line-break source)
-        (source-skip-whitespace-and-comments source)
-        (let ((content (read-document-content source)))
-          (vector-push-extend content docs))
-        (source-skip-to-eol source)
-        (source-consume-line-break source)
-        (source-skip-whitespace-and-comments source)
-        (source-match-document-end source)
-        (source-skip-blanks source)
-        (source-skip-comment source)
-        (source-consume-line-break source))))
+        ;; Consume any standalone `...` end markers separating documents. A `...`
+        ;; on its own does not by itself create a document; it closes one.
+        (loop while (and (source-at-line-start-p source)
+                         (source-match-document-end source))
+              do (source-skip-blanks source)
+                 (source-skip-comment source)
+                 (source-consume-line-break source)
+                 (source-skip-whitespace-and-comments source))
+        (when (source-eof-p source)
+          (return))
+        ;; READ-DOCUMENT binds its own *ANCHOR-TABLE* / *TAG-HANDLES* and handles
+        ;; directives, the optional `---`, the body, and a trailing `...`.
+        (let ((before (source-index source))
+              (content (read-document source)))
+          (vector-push-extend content docs)
+          ;; Guard against a non-advancing call (would loop forever): if the
+          ;; cursor did not move and we are not at EOF, treat the remainder as a
+          ;; single empty document already captured and stop.
+          (when (and (= (source-index source) before)
+                     (not (source-eof-p source)))
+            (return)))))
     (coerce docs 'vector)))
