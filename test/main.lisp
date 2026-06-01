@@ -18,8 +18,6 @@
 (define-test stubs-signal-loudly
   :parent yaml-parther
   :description "Unimplemented verbs signal (no silent fallback)."
-  (fail (yaml:parse "x: 1") 'error)
-  (fail (yaml:parse-all "x: 1") 'error)
   (fail (yaml:emit 42) 'error))
 
 ;;; ---------------------------------------------------------------------------
@@ -167,6 +165,45 @@
   :parent block-mappings
   (let ((result (yaml-parther::read-block-mapping
                  (yaml-parther::make-source "key: value"))))
+    (true (hash-table-p result) "Result is a hash-table")
+    (is equal "value" (gethash "key" result) "key maps to value")))
+
+(define-test multiple-key-value-pairs
+  :parent block-mappings
+  (let ((result (yaml-parther::read-block-mapping
+                 (yaml-parther::make-source "a: 1
+b: 2
+c: 3"))))
+    (is = 3 (hash-table-count result) "Three entries")
+    (is = 1 (gethash "a" result) "a maps to 1")
+    (is = 2 (gethash "b" result) "b maps to 2")
+    (is = 3 (gethash "c" result) "c maps to 3")))
+
+(define-test empty-value
+  :parent block-mappings
+  (let ((result (yaml-parther::read-block-mapping
+                 (yaml-parther::make-source "key:"))))
+    (is eq 'null (gethash "key" result) "empty value becomes null")))
+
+(define-test value-scalar-resolution
+  :parent block-mappings
+  (let ((result (yaml-parther::read-block-mapping
+                 (yaml-parther::make-source "bool: true
+num: 42
+str: hello"))))
+    (is eq t (gethash "bool" result) "true resolves to T")
+    (is = 42 (gethash "num" result) "42 resolves to integer")
+    (is equal "hello" (gethash "str" result) "hello stays string")))
+
+(define-test key-scalar-resolution
+  :parent block-mappings
+  (let ((result (yaml-parther::read-block-mapping
+                 (yaml-parther::make-source "42: value"))))
+    (is equal "value" (gethash 42 result) "numeric key resolves to integer")))
+
+(define-test mapping-via-parse
+  :parent block-mappings
+  (let ((result (yaml:parse "key: value")))
     (true (hash-table-p result) "Result is a hash-table")
     (is equal "value" (gethash "key" result) "key maps to value")))
 

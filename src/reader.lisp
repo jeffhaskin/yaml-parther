@@ -223,6 +223,19 @@ Returns T if content follows, NIL if at EOF."
                 (line-break-p (source-peek source)))
       (return t))))
 
+(defun looks-like-mapping-key-p (source)
+  "Check if current position looks like a mapping key (has ': ' on this line)."
+  (loop for i from 0
+        for char = (source-peek source i)
+        while (and char (not (line-break-p char)))
+        when (and (char= char #\:)
+                  (let ((next (source-peek source (1+ i))))
+                    (or (null next)
+                        (whitespace-p next)
+                        (line-break-p next))))
+          return t
+        finally (return nil)))
+
 (defun read-document-content (source)
   "Read the content of a document. Dispatches based on first character."
   (source-skip-blanks source)
@@ -240,7 +253,11 @@ Returns T if content follows, NIL if at EOF."
                    (line-break-p (source-peek source 1))
                    (null (source-peek source 1)))
                (read-block-sequence source)
-               (read-plain-scalar source))))
+               (if (looks-like-mapping-key-p source)
+                   (read-block-mapping source)
+                   (read-plain-scalar source)))))
+      ((looks-like-mapping-key-p source)
+       (read-block-mapping source))
       (t (read-plain-scalar source)))))
 
 (defun read-document (source)
