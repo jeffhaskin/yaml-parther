@@ -571,11 +571,42 @@ Returns T if content follows, NIL if at EOF."
        (read-block-mapping source))
       (t (read-plain-scalar source)))))
 
+(defun read-directives (source)
+  "Read any YAML directives at the start of a document.
+Updates *yaml-version* for %YAML directives. Returns T if directives were found."
+  (let ((found nil))
+    (loop
+      (source-skip-whitespace-and-comments source)
+      (when (source-eof-p source)
+        (return))
+      (unless (eql (source-peek source) #\%)
+        (return))
+      (cond
+        ((and (eql (source-peek source 1) #\Y)
+              (eql (source-peek source 2) #\A)
+              (eql (source-peek source 3) #\M)
+              (eql (source-peek source 4) #\L))
+         (let ((version (parse-yaml-directive source)))
+           (setf *yaml-version* version)
+           (setf found t)))
+        ((and (eql (source-peek source 1) #\T)
+              (eql (source-peek source 2) #\A)
+              (eql (source-peek source 3) #\G))
+         (parse-tag-directive source)
+         (setf found t))
+        (t (return)))
+      (source-skip-blanks source)
+      (source-skip-comment source)
+      (source-consume-line-break source))
+    found))
+
 (defun read-document (source)
   "Read exactly one YAML document from SOURCE, returning its native Lisp value."
   (source-skip-whitespace-and-comments source)
   (when (source-eof-p source)
     (return-from read-document 'null))
+  (read-directives source)
+  (source-skip-whitespace-and-comments source)
   (source-match-document-start source)
   (source-skip-blanks source)
   (source-skip-comment source)

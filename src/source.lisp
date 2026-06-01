@@ -6,6 +6,10 @@
 
 (in-package #:yaml-parther)
 
+(defparameter *yaml-version* '(1 . 2)
+  "The YAML version currently being parsed. Defaults to 1.2.
+Set by %YAML directives during document parsing.")
+
 (defstruct (source (:constructor %make-source))
   "An input cursor over YAML text, carrying line/column position and indent context."
   (text         "" :type string)
