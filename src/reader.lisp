@@ -227,8 +227,11 @@ Expects cursor at '>'."
     (coerce chars 'string)))
 
 ;;; ---------------------------------------------------------------------------
-;;; Anchor handling
+;;; Anchor/Alias handling
 ;;; ---------------------------------------------------------------------------
+
+(defvar *anchor-table* nil
+  "During parsing, maps anchor names to their resolved values.")
 
 (defun anchor-char-p (char)
   "Return T if CHAR is valid in an anchor name."
@@ -236,19 +239,39 @@ Expects cursor at '>'."
        (or (alphanumericp char)
            (find char "-_"))))
 
-(defun skip-anchor (source)
-  "Skip an anchor definition (&name) and trailing whitespace.
-Returns the anchor name as a string."
-  (unless (eql (source-peek source) #\&)
-    (return-from skip-anchor nil))
-  (source-advance source)
+(defun read-anchor-name (source)
+  "Read an anchor/alias name starting after & or *."
   (let ((chars (make-array 0 :element-type 'character :adjustable t :fill-pointer 0)))
     (loop for char = (source-peek source)
           while (anchor-char-p char)
           do (vector-push-extend char chars)
              (source-advance source))
-    (source-skip-blanks source)
     (coerce chars 'string)))
+
+(defun read-anchor (source)
+  "Read an anchor definition (&name). Returns the anchor name."
+  (unless (eql (source-peek source) #\&)
+    (return-from read-anchor nil))
+  (source-advance source)
+  (let ((name (read-anchor-name source)))
+    (source-skip-blanks source)
+    name))
+
+(defun read-alias (source)
+  "Read an alias (*name) and resolve to the anchored value.
+Signals yaml-reference-error if the anchor is undefined."
+  (unless (eql (source-peek source) #\*)
+    (return-from read-alias nil))
+  (let ((pos (source-position source)))
+    (source-advance source)
+    (let ((name (read-anchor-name source)))
+      (multiple-value-bind (value found-p) (gethash name *anchor-table*)
+        (unless found-p
+          (error 'yaml-reference-error
+                 :anchor name
+                 :message (format nil "Undefined anchor: ~A" name)
+                 :position pos))
+        value))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Block mapping reading
@@ -327,18 +350,30 @@ Supports both implicit keys (key: value) and explicit keys (? key : value)."
                  :key key
                  :message (format nil "Duplicate mapping key: ~S" key)
                  :position (source-position source)))
-        (when (eql (source-peek source) #\&)
-          (skip-anchor source))
-        (let ((value (cond
-                       ((or (source-eof-p source)
-                            (line-break-p (source-peek source)))
-                        'null)
-                       ((eql (source-peek source) #\|)
-                        (read-literal-scalar source))
-                       ((eql (source-peek source) #\>)
-                        (read-folded-scalar source))
-                       (t (read-plain-scalar source)))))
-          (setf (gethash key table) value))
+        (let ((anchor-name (when (eql (source-peek source) #\&)
+                             (read-anchor source))))
+          (let ((value (cond
+                         ((or (source-eof-p source)
+                              (line-break-p (source-peek source)))
+                          'null)
+                         ((eql (source-peek source) #\*)
+                          (read-alias source))
+                         ((eql (source-peek source) #\|)
+                          (read-literal-scalar source))
+                         ((eql (source-peek source) #\>)
+                          (read-folded-scalar source))
+                         ((eql (source-peek source) #\[)
+                          (read-flow-sequence source))
+                         ((eql (source-peek source) #\{)
+                          (read-flow-mapping source))
+                         ((eql (source-peek source) #\')
+                          (read-single-quoted-scalar source))
+                         ((eql (source-peek source) #\")
+                          (read-double-quoted-scalar source))
+                         (t (read-plain-scalar source)))))
+            (when (and anchor-name *anchor-table*)
+              (setf (gethash anchor-name *anchor-table*) value))
+            (setf (gethash key table) value)))
         (source-skip-to-eol source)
         (source-consume-line-break source)
         (source-skip-blank-lines source)
@@ -550,6 +585,8 @@ Returns T if content follows, NIL if at EOF."
       ((line-break-p char) 'null)
       ((eql char #\[) (read-flow-sequence source))
       ((eql char #\{) (read-flow-mapping source))
+      ((eql char #\') (read-single-quoted-scalar source))
+      ((eql char #\") (read-double-quoted-scalar source))
       ((and (eql char #\?)
             (let ((next (source-peek source 1)))
               (or (null next) (whitespace-p next) (line-break-p next))))
@@ -602,22 +639,23 @@ Updates *yaml-version* for %YAML directives. Returns T if directives were found.
 
 (defun read-document (source)
   "Read exactly one YAML document from SOURCE, returning its native Lisp value."
-  (source-skip-whitespace-and-comments source)
-  (when (source-eof-p source)
-    (return-from read-document 'null))
-  (read-directives source)
-  (source-skip-whitespace-and-comments source)
-  (source-match-document-start source)
-  (source-skip-blanks source)
-  (source-skip-comment source)
-  (source-consume-line-break source)
-  (source-skip-whitespace-and-comments source)
-  (let ((content (read-document-content source)))
-    (source-skip-to-eol source)
+  (let ((*anchor-table* (make-hash-table :test #'equal)))
+    (source-skip-whitespace-and-comments source)
+    (when (source-eof-p source)
+      (return-from read-document 'null))
+    (read-directives source)
+    (source-skip-whitespace-and-comments source)
+    (source-match-document-start source)
+    (source-skip-blanks source)
+    (source-skip-comment source)
     (source-consume-line-break source)
     (source-skip-whitespace-and-comments source)
-    (source-match-document-end source)
-    content))
+    (let ((content (read-document-content source)))
+      (source-skip-to-eol source)
+      (source-consume-line-break source)
+      (source-skip-whitespace-and-comments source)
+      (source-match-document-end source)
+      content)))
 
 (defun read-all-documents (source)
   "Read every document from a (possibly multi-document) SOURCE stream,

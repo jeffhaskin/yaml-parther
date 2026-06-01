@@ -264,6 +264,18 @@ a: 2") 'yaml-parther:yaml-duplicate-key-error
     (is equal "value" (gethash "key" result)
         "Anchor attached to scalar value")))
 
+(define-test alias-resolves
+  :parent anchors
+  (let ((result (yaml:parse "a: &ref hello
+b: *ref")))
+    (is equal "hello" (gethash "a" result) "Anchor value")
+    (is equal "hello" (gethash "b" result) "Alias resolves to anchor")))
+
+(define-test undefined-alias-error
+  :parent anchors
+  (fail (yaml:parse "a: *undefined") 'yaml-parther:yaml-reference-error
+      "Undefined alias signals error"))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Flow collection tests
 ;;; ---------------------------------------------------------------------------
@@ -373,6 +385,67 @@ a: 2") 'yaml-parther:yaml-duplicate-key-error
 : value")))
     (true (hash-table-p result) "Result is hash-table")
     (is equal "value" (gethash "hello world" result) "quoted key works")))
+
+;;; ---------------------------------------------------------------------------
+;;; Edge / boundary case tests
+;;; ---------------------------------------------------------------------------
+
+(define-test edge-cases
+  :parent yaml-parther
+  :description "Edge and boundary case parsing.")
+
+(define-test empty-document
+  :parent edge-cases
+  :description "Empty document parses to null"
+  (is eq 'null (yaml:parse "") "Empty string is null")
+  (is eq 'null (yaml:parse "   ") "Whitespace-only is null")
+  (is eq 'null (yaml:parse "
+") "Newline-only is null"))
+
+(define-test deeply-nested-flow
+  :parent edge-cases
+  :description "Deeply nested flow structures"
+  (let ((result (yaml:parse "[[[1]]]")))
+    (true (vectorp result) "Outer is vector")
+    (true (vectorp (aref result 0)) "Middle is vector")
+    (true (vectorp (aref (aref result 0) 0)) "Inner is vector")
+    (is = 1 (aref (aref (aref result 0) 0) 0) "Value is 1")))
+
+(define-test trailing-whitespace-scalar
+  :parent edge-cases
+  :description "Trailing whitespace in plain scalar"
+  (let ((result (yaml:parse "key: value   ")))
+    (is equal "value" (gethash "key" result) "Trailing whitespace trimmed")))
+
+(define-test unicode-scalar
+  :parent edge-cases
+  :description "Unicode characters in scalars"
+  (is equal "hello" (yaml:parse "\"hello\"") "Basic string")
+  (is equal "αβγ" (yaml:parse "\"\\u03B1\\u03B2\\u03B3\"") "Greek via unicode escapes"))
+
+(define-test mixed-flow-and-block
+  :parent edge-cases
+  :description "Flow collection inside block structure"
+  (let ((result (yaml:parse "key: [1, 2, 3]")))
+    (true (hash-table-p result) "Outer is mapping")
+    (true (vectorp (gethash "key" result)) "Value is sequence")
+    (is equalp #(1 2 3) (gethash "key" result) "Sequence contents")))
+
+(define-test single-value-document
+  :parent edge-cases
+  :description "Document with single scalar value"
+  (is = 42 (yaml:parse "42") "Numeric scalar")
+  (is eq t (yaml:parse "true") "Boolean scalar")
+  (is equal "hello" (yaml:parse "hello") "String scalar"))
+
+(define-test flow-with-extra-spaces
+  :parent edge-cases
+  :description "Flow collections with extra whitespace"
+  (let ((result (yaml:parse "[  1  ,  2  ,  3  ]")))
+    (is equalp #(1 2 3) result "Spaces around items handled"))
+  (let ((result (yaml:parse "{  a  :  1  ,  b  :  2  }")))
+    (is = 1 (gethash "a" result) "Spaces in mapping")
+    (is = 2 (gethash "b" result) "Second pair")))
 
 (defun run ()
   "Run the whole suite. Convenience entry point for `ros run`."
