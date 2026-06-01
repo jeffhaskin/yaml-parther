@@ -184,3 +184,48 @@ a blank line follows (which keeps the newline), or NIL if no line break."
           (line-break-p (source-peek source)))
       :keep
       :fold))
+
+;;; ---------------------------------------------------------------------------
+;;; Comment handling
+;;; ---------------------------------------------------------------------------
+
+(defun source-skip-comment (source)
+  "Skip a YAML comment starting at #, consuming to end of line but not the line break.
+Returns the number of characters consumed (0 if not at a comment)."
+  (unless (eql (source-peek source) #\#)
+    (return-from source-skip-comment 0))
+  (source-skip-while source (lambda (c) (not (line-break-p c)))))
+
+(defun source-skip-whitespace-and-comments (source)
+  "Skip whitespace, then a comment if present, then line break, repeating.
+Stops when non-whitespace, non-comment content is reached.
+Returns the number of line breaks consumed."
+  (loop for lines from 0
+        do (source-skip-blanks source)
+           (source-skip-comment source)
+        while (source-consume-line-break source)
+        finally (return lines)))
+
+;;; ---------------------------------------------------------------------------
+;;; Document markers
+;;; ---------------------------------------------------------------------------
+
+(defun source-match-marker (source marker)
+  "Match MARKER followed by whitespace, newline, or EOF.
+Advances past the marker if matched, returns T. Otherwise returns NIL."
+  (let ((len (length marker)))
+    (when (source-match source marker)
+      (let ((next (source-peek source)))
+        (if (or (null next) (whitespace-p next) (line-break-p next))
+            t
+            (progn
+              (setf (source-index source) (- (source-index source) len))
+              nil))))))
+
+(defun source-match-document-start (source)
+  "Match `---` followed by whitespace, newline, or EOF."
+  (source-match-marker source "---"))
+
+(defun source-match-document-end (source)
+  "Match `...` followed by whitespace, newline, or EOF."
+  (source-match-marker source "..."))
