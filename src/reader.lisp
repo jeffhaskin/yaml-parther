@@ -189,6 +189,44 @@ Expects cursor at '|'."
     (coerce chars 'string)))
 
 ;;; ---------------------------------------------------------------------------
+;;; Folded block scalar reading
+;;; ---------------------------------------------------------------------------
+
+(defun read-folded-scalar (source)
+  "Read a folded block scalar (>) from SOURCE. Folds newlines to spaces.
+Expects cursor at '>'."
+  (unless (eql (source-peek source) #\>)
+    (error 'yaml-scanner-error :message "Expected '>' for folded scalar"))
+  (source-advance source)
+  (source-skip-blanks source)
+  (source-consume-line-break source)
+  (let ((content-indent (source-count-indent source))
+        (chars (make-array 0 :element-type 'character :adjustable t :fill-pointer 0))
+        (first-line t))
+    (when (zerop content-indent)
+      (return-from read-folded-scalar ""))
+    (loop
+      (when (source-eof-p source)
+        (return))
+      (let ((line-indent (source-count-indent source)))
+        (when (and (< line-indent content-indent)
+                   (not (line-break-p (source-peek source))))
+          (return))
+        (source-skip-indent source)
+        (unless first-line
+          (vector-push-extend #\Space chars))
+        (setf first-line nil)
+        (loop for char = (source-peek source)
+              while (and char (not (line-break-p char)))
+              do (vector-push-extend char chars)
+                 (source-advance source))
+        (unless (source-consume-line-break source)
+          (vector-push-extend #\Newline chars)
+          (return))))
+    (vector-push-extend #\Newline chars)
+    (coerce chars 'string)))
+
+;;; ---------------------------------------------------------------------------
 ;;; Block mapping reading
 ;;; ---------------------------------------------------------------------------
 
@@ -203,25 +241,62 @@ Expects cursor at '|'."
              (source-advance source))
     (resolve-scalar (string-right-trim '(#\Space #\Tab) (coerce chars 'string)))))
 
+(defun read-explicit-key (source)
+  "Read an explicit key after '?' indicator. Returns the key value."
+  (source-advance source) ; consume '?'
+  (source-skip-blanks source)
+  (cond
+    ((or (source-eof-p source) (line-break-p (source-peek source)))
+     'null)
+    ((eql (source-peek source) #\:)
+     'null)
+    (t
+     (let ((chars (make-array 0 :element-type 'character :adjustable t :fill-pointer 0)))
+       (loop for char = (source-peek source)
+             while (and char
+                        (not (line-break-p char))
+                        (not (and (char= char #\:)
+                                  (or (null (source-peek source 1))
+                                      (whitespace-p (source-peek source 1))
+                                      (line-break-p (source-peek source 1))))))
+             do (vector-push-extend char chars)
+                (source-advance source))
+       (resolve-scalar (string-right-trim '(#\Space #\Tab) (coerce chars 'string)))))))
+
 (defun read-block-mapping (source)
-  "Read a block mapping from SOURCE. Returns a hash-table (test EQUAL)."
+  "Read a block mapping from SOURCE. Returns a hash-table (test EQUAL).
+Supports both implicit keys (key: value) and explicit keys (? key : value)."
   (let ((table (make-hash-table :test #'equal))
         (map-indent (source-column source)))
     (loop
       (source-skip-blanks source)
       (when (source-eof-p source)
         (return))
-      (let ((key (read-mapping-key source)))
-        (when (and (stringp key) (string= key ""))
+      (let* ((explicit-key-p (eql (source-peek source) #\?))
+             (key (if explicit-key-p
+                      (read-explicit-key source)
+                      (read-mapping-key source))))
+        (when (and (not explicit-key-p) (stringp key) (string= key ""))
           (return))
+        (source-skip-blanks source)
+        (when (and explicit-key-p (line-break-p (source-peek source)))
+          (source-consume-line-break source)
+          (source-skip-blank-lines source)
+          (source-skip-indent source))
+        (source-skip-blanks source)
         (unless (eql (source-peek source) #\:)
           (return))
         (source-advance source)
         (source-skip-blanks source)
-        (let ((value (if (or (source-eof-p source)
-                             (line-break-p (source-peek source)))
-                         'null
-                         (read-plain-scalar source))))
+        (let ((value (cond
+                       ((or (source-eof-p source)
+                            (line-break-p (source-peek source)))
+                        'null)
+                       ((eql (source-peek source) #\|)
+                        (read-literal-scalar source))
+                       ((eql (source-peek source) #\>)
+                        (read-folded-scalar source))
+                       (t (read-plain-scalar source)))))
           (setf (gethash key table) value))
         (source-skip-to-eol source)
         (source-consume-line-break source)
@@ -291,6 +366,108 @@ Handle is like !yaml!, !!, or !e!. Prefix is a URI prefix."
           (coerce prefix 'string))))
 
 ;;; ---------------------------------------------------------------------------
+;;; Flow sequence reading
+;;; ---------------------------------------------------------------------------
+
+(defun read-flow-sequence (source)
+  "Read a flow sequence [...] from SOURCE. Opening bracket must be current char.
+Returns a vector of items."
+  (unless (eql (source-peek source) #\[)
+    (error 'yaml-scanner-error :message "Expected opening bracket"))
+  (source-advance source) ; consume [
+  (source-skip-blanks source)
+  (let ((items (make-array 0 :adjustable t :fill-pointer 0)))
+    (loop
+      (source-skip-blanks source)
+      (when (eql (source-peek source) #\])
+        (source-advance source)
+        (return (coerce items 'vector)))
+      (when (source-eof-p source)
+        (error 'yaml-scanner-error :message "Unterminated flow sequence"))
+      (let ((item (read-flow-node source)))
+        (vector-push-extend item items))
+      (source-skip-blanks source)
+      (cond
+        ((eql (source-peek source) #\,)
+         (source-advance source))
+        ((eql (source-peek source) #\])
+         nil) ; will be consumed on next iteration
+        (t
+         (error 'yaml-scanner-error :message "Expected , or ] in flow sequence"))))))
+
+(defun read-flow-node (source)
+  "Read a flow node (scalar, sequence, or mapping) within flow context."
+  (source-skip-blanks source)
+  (let ((char (source-peek source)))
+    (cond
+      ((null char) 'null)
+      ((eql char #\[) (read-flow-sequence source))
+      ((eql char #\{) (read-flow-mapping source))
+      ((eql char #\') (read-single-quoted-scalar source))
+      ((eql char #\") (read-double-quoted-scalar source))
+      (t (read-flow-plain-scalar source)))))
+
+(defun read-flow-plain-scalar (source)
+  "Read a plain scalar within flow context.
+Terminates at flow indicators: , ] } and :"
+  (let ((chars (make-array 0 :element-type 'character :adjustable t :fill-pointer 0)))
+    (loop for char = (source-peek source)
+          while (and char
+                     (not (whitespace-p char))
+                     (not (line-break-p char))
+                     (not (find char ",]}:")))
+          do (vector-push-extend char chars)
+             (source-advance source))
+    (resolve-scalar (coerce chars 'string))))
+
+;;; ---------------------------------------------------------------------------
+;;; Flow mapping reading
+;;; ---------------------------------------------------------------------------
+
+(defun read-flow-mapping (source)
+  "Read a flow mapping {...} from SOURCE. Opening brace must be current char.
+Returns a hash-table (test EQUAL)."
+  (unless (eql (source-peek source) #\{)
+    (error 'yaml-scanner-error :message "Expected opening brace"))
+  (source-advance source) ; consume {
+  (source-skip-blanks source)
+  (let ((table (make-hash-table :test #'equal)))
+    (loop
+      (source-skip-blanks source)
+      (when (eql (source-peek source) #\})
+        (source-advance source)
+        (return table))
+      (when (source-eof-p source)
+        (error 'yaml-scanner-error :message "Unterminated flow mapping"))
+      (let ((key (read-flow-mapping-key source)))
+        (source-skip-blanks source)
+        (unless (eql (source-peek source) #\:)
+          (error 'yaml-scanner-error :message "Expected : after mapping key"))
+        (source-advance source) ; consume :
+        (source-skip-blanks source)
+        (let ((value (if (find (source-peek source) ",}")
+                         'null
+                         (read-flow-node source))))
+          (setf (gethash key table) value)))
+      (source-skip-blanks source)
+      (cond
+        ((eql (source-peek source) #\,)
+         (source-advance source))
+        ((eql (source-peek source) #\})
+         nil) ; will be consumed on next iteration
+        (t
+         (error 'yaml-scanner-error :message "Expected , or } in flow mapping"))))))
+
+(defun read-flow-mapping-key (source)
+  "Read a flow mapping key until colon."
+  (source-skip-blanks source)
+  (let ((char (source-peek source)))
+    (cond
+      ((eql char #\') (read-single-quoted-scalar source))
+      ((eql char #\") (read-double-quoted-scalar source))
+      (t (read-flow-plain-scalar source)))))
+
+;;; ---------------------------------------------------------------------------
 ;;; Document reading
 ;;; ---------------------------------------------------------------------------
 
@@ -330,6 +507,8 @@ Returns T if content follows, NIL if at EOF."
     (cond
       ((null char) 'null)
       ((line-break-p char) 'null)
+      ((eql char #\[) (read-flow-sequence source))
+      ((eql char #\{) (read-flow-mapping source))
       ((eql char #\-)
        (if (and (eql (source-peek source 1) #\-)
                 (eql (source-peek source 2) #\-)
