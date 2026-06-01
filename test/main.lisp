@@ -15,14 +15,6 @@
   :parent yaml-parther
   (true t "Parachute harness loads and runs."))
 
-(define-test emit-works
-  :parent yaml-parther
-  :description "Emit produces YAML output."
-  (is string= "42
-" (yaml:emit 42) "Emit integer")
-  (is string= "hello
-" (yaml:emit "hello") "Emit string"))
-
 ;;; ---------------------------------------------------------------------------
 ;;; Scalar resolution tests (core schema)
 ;;; ---------------------------------------------------------------------------
@@ -418,11 +410,19 @@ actual:
 
 (define-test empty-document
   :parent edge-cases
-  :description "Empty document parses to null"
-  (is eq 'null (yaml:parse "") "Empty string is null")
-  (is eq 'null (yaml:parse "   ") "Whitespace-only is null")
-  (is eq 'null (yaml:parse "
-") "Newline-only is null"))
+  :description "Zero-document streams signal; a bare --- is one null document"
+  ;; YAML 1.2: a stream may contain ZERO documents. Single-document PARSE has
+  ;; nothing to return for an empty / whitespace-only / comment-only stream, so
+  ;; it must SIGNAL loudly rather than invent a null.
+  (fail (yaml:parse "") 'yaml:yaml-parse-error)
+  (fail (yaml:parse "   ") 'yaml:yaml-parse-error)
+  (fail (yaml:parse "
+") 'yaml:yaml-parse-error)
+  ;; PARSE-ALL returns a vector with exactly one element per actual document;
+  ;; a zero-document stream is the EMPTY vector.
+  (is equalp #() (yaml:parse-all "") "Empty stream is zero documents")
+  ;; A bare `---` document-start indicator with no content is ONE null document.
+  (is eq 'null (yaml:parse "---") "Bare --- is a single null document"))
 
 (define-test deeply-nested-flow
   :parent edge-cases

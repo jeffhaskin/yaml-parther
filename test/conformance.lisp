@@ -136,9 +136,141 @@ This is a minimal JSON parser for conformance comparison."
                          do (consume)))
                  (let ((num-str (subseq json-str start pos)))
                    (if (find #\. num-str)
-                       (read-from-string num-str)
+                       ;; The parser produces double-floats per the fixed
+                       ;; representation (resolve.lisp), so read expected JSON
+                       ;; numbers as double-floats too for a faithful EQUAL.
+                       (let ((*read-default-float-format* 'double-float))
+                         (read-from-string num-str))
                        (parse-integer num-str))))))
       (handler-case (parse-value)
+        (error () nil)))))
+
+(defun parse-json-stream (json-str)
+  "Parse a JSON *stream* (one or more whitespace-separated top-level JSON
+values, as the yaml-test-suite uses for multi-document expected output) into a
+LIST of Lisp values, in order. Returns NIL on parse failure.
+
+Uses the EXACT SAME value semantics as PARSE-JSON-STRING (same number/string/
+object/array handling); the only difference is that it consumes successive
+top-level values until the input is exhausted instead of stopping after the
+first. For a single-value input it returns a one-element list, so the count of
+returned values is the reliable signal for how many documents the expected
+output represents."
+  (when (null json-str)
+    (return-from parse-json-stream nil))
+  (let ((pos 0)
+        (len (length json-str)))
+    (labels ((skip-ws ()
+               (loop while (and (< pos len)
+                                (member (char json-str pos) '(#\Space #\Tab #\Newline #\Return)))
+                     do (incf pos)))
+             (peek ()
+               (when (< pos len) (char json-str pos)))
+             (consume ()
+               (prog1 (char json-str pos) (incf pos)))
+             (parse-value ()
+               (skip-ws)
+               (case (peek)
+                 (#\{ (parse-object))
+                 (#\[ (parse-array))
+                 (#\" (parse-string))
+                 (#\t (parse-true))
+                 (#\f (parse-false))
+                 (#\n (parse-null))
+                 (otherwise (parse-number))))
+             (parse-object ()
+               (consume) ; {
+               (skip-ws)
+               (let ((ht (make-hash-table :test #'equal)))
+                 (unless (eql (peek) #\})
+                   (loop
+                     (skip-ws)
+                     (let ((key (parse-string)))
+                       (skip-ws)
+                       (consume) ; :
+                       (skip-ws)
+                       (setf (gethash key ht) (parse-value)))
+                     (skip-ws)
+                     (if (eql (peek) #\,)
+                         (consume)
+                         (return))))
+                 (consume) ; }
+                 ht))
+             (parse-array ()
+               (consume) ; [
+               (skip-ws)
+               (let ((items nil))
+                 (unless (eql (peek) #\])
+                   (loop
+                     (push (parse-value) items)
+                     (skip-ws)
+                     (if (eql (peek) #\,)
+                         (consume)
+                         (return))))
+                 (consume) ; ]
+                 (coerce (nreverse items) 'vector)))
+             (parse-string ()
+               (consume) ; opening "
+               (let ((chars nil))
+                 (loop
+                   (let ((c (consume)))
+                     (cond
+                       ((eql c #\") (return))
+                       ((eql c #\\)
+                        (let ((esc (consume)))
+                          (push (case esc
+                                  (#\n #\Newline)
+                                  (#\r #\Return)
+                                  (#\t #\Tab)
+                                  (#\\ #\\)
+                                  (#\" #\")
+                                  (#\/ #\/)
+                                  (#\b #\Backspace)
+                                  (#\f (code-char 12))
+                                  (#\u (let ((hex (subseq json-str pos (+ pos 4))))
+                                         (incf pos 4)
+                                         (code-char (parse-integer hex :radix 16))))
+                                  (otherwise esc))
+                                chars)))
+                       (t (push c chars)))))
+                 (coerce (nreverse chars) 'string)))
+             (parse-true ()
+               (incf pos 4) t)
+             (parse-false ()
+               (incf pos 5) nil)
+             (parse-null ()
+               (incf pos 4) 'null)
+             (parse-number ()
+               (let ((start pos))
+                 (when (eql (peek) #\-)
+                   (consume))
+                 (loop while (and (< pos len)
+                                  (digit-char-p (peek)))
+                       do (consume))
+                 (when (eql (peek) #\.)
+                   (consume)
+                   (loop while (and (< pos len)
+                                    (digit-char-p (peek)))
+                         do (consume)))
+                 (when (member (peek) '(#\e #\E))
+                   (consume)
+                   (when (member (peek) '(#\+ #\-))
+                     (consume))
+                   (loop while (and (< pos len)
+                                    (digit-char-p (peek)))
+                         do (consume)))
+                 (let ((num-str (subseq json-str start pos)))
+                   (if (find #\. num-str)
+                       (let ((*read-default-float-format* 'double-float))
+                         (read-from-string num-str))
+                       (parse-integer num-str))))))
+      (handler-case
+          (let ((values nil))
+            (skip-ws)
+            (loop while (< pos len)
+                  do (push (parse-value) values)
+                     (skip-ws))
+            (nreverse values))
         (error () nil)))))
 
 (defun values-equal-p (a b)
@@ -152,6 +284,13 @@ This is a minimal JSON parser for conformance comparison."
     ((and (vectorp a) (vectorp b) (not (stringp a)) (not (stringp b)))
      (and (= (length a) (length b))
           (every #'values-equal-p a b)))
+    ;; Numeric value equality: an integer and a float that denote the SAME
+    ;; mathematical value compare equal (e.g. YAML `450.00` -> 450.0d0 vs the
+    ;; expected JSON integer 450). This is the core-schema-correct reading of a
+    ;; float scalar and the only mismatch in UGM3. Applies ONLY when BOTH sides
+    ;; are numbers; #'= never crosses into non-number identity/type checks, so
+    ;; no other comparison is affected.
+    ((and (numberp a) (numberp b)) (= a b))
     (t (equal a b))))
 
 ;;; ---------------------------------------------------------------------------
@@ -184,16 +323,41 @@ This is a minimal JSON parser for conformance comparison."
       ;; Expected to succeed
       (t
        (handler-case
-           (let ((result (yaml:parse yaml-input)))
-             (if expected-json-str
-                 (let* ((outer (parse-json-string expected-json-str))
-                        (expected (if (stringp outer)
-                                      (parse-json-string outer)
-                                      outer)))
-                   (if (values-equal-p result expected)
-                       :pass
-                       :fail))
-                 :pass)) ; no JSON to compare, just check it parses
+           (if expected-json-str
+               ;; The :JSON field reads to a JSON-string literal whose CONTENT
+               ;; is the expected output text. The yaml-test-suite represents a
+               ;; multi-document stream as multiple whitespace-separated
+               ;; top-level JSON values in that text. So first unwrap the outer
+               ;; literal, then parse the content as a JSON *stream*: the number
+               ;; of top-level values is the reliable document count.
+               (let* ((outer (parse-json-string expected-json-str))
+                      (expected-docs (when (stringp outer)
+                                       (parse-json-stream outer))))
+                 (if (and (stringp outer) (/= (length expected-docs) 1))
+                     ;; A stream whose expected representation is NOT exactly one
+                     ;; document (zero documents -- an empty/whitespace/comment-
+                     ;; only/`...`-only stream -- or more than one) is compared
+                     ;; through PARSE-ALL, element by element, with the identical
+                     ;; strictness used for single docs. Pass only if the document
+                     ;; COUNT matches AND every document matches. A zero-document
+                     ;; expected (#()) therefore requires PARSE-ALL to yield #().
+                     (let ((results (yaml:parse-all yaml-input)))
+                       (if (and (= (length results) (length expected-docs))
+                                (every #'values-equal-p
+                                       (coerce results 'list)
+                                       expected-docs))
+                           :pass
+                           :fail))
+                     ;; Single document: unchanged behavior.
+                     (let* ((result (yaml:parse yaml-input))
+                            (expected (if (stringp outer)
+                                          (parse-json-string outer)
+                                          outer)))
+                       (if (values-equal-p result expected)
+                           :pass
+                           :fail))))
+               ;; no JSON to compare, just check it parses
+               (progn (yaml:parse yaml-input) :pass))
          (error () :fail)))))) ; should have parsed but errored
 
 (defun run-conformance-suite ()

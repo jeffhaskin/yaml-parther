@@ -9,12 +9,36 @@ Usage:
 """
 
 import os
+import re
 import sys
 import json
 import yaml
 from pathlib import Path
 
 SUITE_DIR = Path(__file__).parent.parent / "tests" / "yaml-test-suite" / "src"
+
+def unescape_glyphs(text):
+    r"""Replace yaml-test-suite presentation glyphs with the real characters.
+
+    Mirrors EXACTLY the canonical unescape() in the vendored suite's
+    bin/YAMLTestSuite.pm (see also ReadMe.md "Special Characters", ~line 68):
+
+        s/␣/ /g;        # U+2423 OPEN BOX -> space
+        s/—*»/\t/g; # zero+ em-dash padding + U+00BB tab-arrow -> tab
+        s/←/\r/g;       # U+2190 LEFTWARDS ARROW -> carriage return
+        s/⇔/﻿/g;   # U+21D4 -> byte order mark
+        s/{newline-marker}//g;   # U+21B5 trailing-newline marker -> removed
+        s/{eof-marker}\n\z//;    # U+220E "no final newline" + final NL stripped
+    """
+    if text is None:
+        return None
+    text = text.replace('␣', ' ')
+    text = re.sub('—*»', '\t', text)
+    text = text.replace('←', '\r')
+    text = text.replace('⇔', '﻿')
+    text = text.replace('↵', '')
+    text = re.sub('∎\n\\Z', '', text)
+    return text
 
 def escape_lisp_string(s):
     """Escape a string for Lisp literal representation."""
@@ -49,9 +73,12 @@ def generate_tests():
 
                 case_id = f"{test_id}" if len(doc) == 1 else f"{test_id}/{idx:02d}"
                 name = test.get('name', case_id)
-                yaml_input = test.get('yaml', '')
+                # Presentation glyphs (U+2423, U+00BB, U+21B5, U+220E, ...) must
+                # be unescaped to real chars before they reach the parser input
+                # or the expected tree. See unescape_glyphs() above.
+                yaml_input = unescape_glyphs(test.get('yaml', ''))
                 json_output = test.get('json')
-                tree_output = test.get('tree', '')
+                tree_output = unescape_glyphs(test.get('tree', ''))
                 fail_flag = test.get('fail', False)
                 tags = test.get('tags', '')
 

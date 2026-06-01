@@ -10,6 +10,10 @@
   "The YAML version currently being parsed. Defaults to 1.2.
 Set by %YAML directives during document parsing.")
 
+(defparameter *document-ended-explicitly* nil
+  "Set by READ-DOCUMENT to indicate whether the document just read was
+terminated by an explicit `...` document-end marker.")
+
 (defstruct (source (:constructor %make-source))
   "An input cursor over YAML text, carrying line/column position and indent context."
   (text         "" :type string)
@@ -38,7 +42,7 @@ Streams are slurped into a string for uniform random-access."
   "Return the character OFFSET positions ahead of the cursor without advancing.
 Returns NIL if that position is past end-of-input."
   (let ((pos (+ (source-index source) offset)))
-    (if (< pos (length (source-text source)))
+    (if (and (>= pos 0) (< pos (length (source-text source))))
         (char (source-text source) pos)
         nil)))
 
@@ -124,6 +128,16 @@ Returns the number of characters skipped."
   "Return T if the cursor is at the start of a line (column 0)."
   (zerop (source-column source)))
 
+(defun source-current-line-indent (source)
+  "Return the indentation (column of the first non-space character) of the line
+the cursor is currently on, without moving the cursor."
+  (let ((line-start (- (source-index source) (source-column source)))
+        (text (source-text source)))
+    (loop for i from line-start below (length text)
+          for col from 0
+          while (char= (char text i) #\Space)
+          finally (return col))))
+
 (defun source-count-indent (source)
   "Count leading spaces at current position without advancing.
 Returns the number of consecutive space characters."
@@ -177,6 +191,23 @@ Returns the number of line breaks consumed."
                      (source-column source) start-column)
                (return count)))))
 
+(defun source-skip-blank-and-comment-lines (source)
+  "Skip any lines that are blank or contain only a comment (after optional
+leading whitespace), leaving the cursor at the start of the next content line
+or at EOF. Returns the number of line breaks consumed."
+  (loop for count from 0
+        do (let ((start-index (source-index source))
+                 (start-line (source-line source))
+                 (start-column (source-column source)))
+             (source-skip-blanks source)
+             (when (eql (source-peek source) #\#)
+               (source-skip-comment source))
+             (unless (source-consume-line-break source)
+               (setf (source-index source) start-index
+                     (source-line source) start-line
+                     (source-column source) start-column)
+               (return count)))))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Line folding primitives
 ;;; ---------------------------------------------------------------------------
@@ -201,6 +232,28 @@ Returns the number of characters consumed (0 if not at a comment)."
   (unless (eql (source-peek source) #\#)
     (return-from source-skip-comment 0))
   (source-skip-while source (lambda (c) (not (line-break-p c)))))
+
+(defun source-skip-flow-whitespace (source)
+  "In flow context, skip blanks, line breaks, and comments (which may appear
+between flow tokens and span multiple lines). Returns the number of line breaks
+consumed."
+  (let ((breaks 0))
+    (loop
+      (let ((blanks (source-skip-blanks source)))
+        (cond
+          ;; A `#` only begins a comment when preceded by whitespace or at the
+          ;; start of a line. The preceding whitespace may have been consumed by
+          ;; a prior token (a plain scalar right-trims its trailing spaces), so
+          ;; check the actual previous character, not just the blanks skipped on
+          ;; this call (yaml-test-suite 6HB6: `[a   # c\n]`).
+          ((and (eql (source-peek source) #\#)
+                (let ((p (source-peek source -1)))
+                  (or (> blanks 0) (null p) (line-break-p p) (whitespace-p p))))
+           (source-skip-comment source))
+          ((line-break-p (source-peek source))
+           (source-consume-line-break source)
+           (incf breaks))
+          (t (return breaks)))))))
 
 (defun source-skip-whitespace-and-comments (source)
   "Skip whitespace, then a comment if present, then line break, repeating.
