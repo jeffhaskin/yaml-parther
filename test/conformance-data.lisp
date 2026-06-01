@@ -30,17 +30,17 @@ invalid
      :tags "error mapping")
     (:id "26DV"
      :name "Whitespace around colon in mappings"
-     :yaml "\"top1\" :␣
+     :yaml "\"top1\" : 
   \"key1\" : &alias1 scalar1
-'top2' :␣
+'top2' : 
   'key2' : &alias2 scalar2
-top3: &node3␣
+top3: &node3 
   *alias1 : scalar3
-top4:␣
+top4: 
   *alias2 : scalar4
-top5   :␣␣␣␣
+top5   :    
   scalar5
-top6:␣
+top6: 
   &anchor6 'key6' : scalar6
 "
      :json "\"{\\n  \\\"top1\\\": {\\n    \\\"key1\\\": \\\"scalar1\\\"\\n  },\\n  \\\"top2\\\": {\\n    \\\"key2\\\": \\\"scalar2\\\"\\n  },\\n  \\\"top3\\\": {\\n    \\\"scalar1\\\": \\\"scalar3\\\"\\n  },\\n  \\\"top4\\\": {\\n    \\\"scalar2\\\": \\\"scalar4\\\"\\n  },\\n  \\\"top5\\\": \\\"scalar5\\\",\\n  \\\"top6\\\": {\\n    \\\"key6\\\": \\\"scalar6\\\"\\n  }\\n}\\n\""
@@ -100,15 +100,13 @@ this is#not: a comment
      :tags "")
     (:id "2G84/02"
      :name "2G84/02"
-     :yaml "--- |1-∎
-"
+     :yaml "--- |1-"
      :json "\"\\\"\\\"\\n\""
      :fail nil
      :tags "")
     (:id "2G84/03"
      :name "2G84/03"
-     :yaml "--- |1+∎
-"
+     :yaml "--- |1+"
      :json nil
      :fail nil
      :tags "")
@@ -243,7 +241,7 @@ k:#foo
     (:id "3RLN/01"
      :name "3RLN/01"
      :yaml "\"2 leading
-    \\———»tab\"
+    \\	tab\"
 "
      :json "\"\\\"2 leading \\\\ttab\\\"\\n\""
      :fail nil
@@ -251,7 +249,7 @@ k:#foo
     (:id "3RLN/02"
      :name "3RLN/02"
      :yaml "\"3 leading
-    ————»tab\"
+    	tab\"
 "
      :json "\"\\\"3 leading tab\\\"\\n\""
      :fail nil
@@ -267,7 +265,7 @@ k:#foo
     (:id "3RLN/04"
      :name "3RLN/04"
      :yaml "\"5 leading
-    \\———»  tab\"
+    \\	  tab\"
 "
      :json "\"\\\"5 leading \\\\t  tab\\\"\\n\""
      :fail nil
@@ -275,7 +273,7 @@ k:#foo
     (:id "3RLN/05"
      :name "3RLN/05"
      :yaml "\"6 leading
-    ————»  tab\"
+    	  tab\"
 "
      :json "\"\\\"6 leading tab\\\"\\n\""
      :fail nil
@@ -314,8 +312,8 @@ quoted: \"So does this
      :name "Invalid tabs as indendation in a mapping"
      :yaml "---
 a:
-———»b:
-———»———»c: value
+	b:
+		c: value
 "
      :json nil
      :fail t
@@ -394,7 +392,7 @@ top2: &node2
      :yaml "--- >
  ab
  cd
-␣
+ 
  ef
 
 
@@ -408,8 +406,8 @@ top2: &node2
      :yaml "- |
  detected
 - >
-␣
-␣␣
+ 
+  
   # detected
 - |1
   explicit
@@ -421,9 +419,8 @@ top2: &node2
      :tags "spec literal folded scalar libyaml-err 1.3-mod whitespace")
     (:id "4RWC"
      :name "Trailing spaces after flow collection"
-     :yaml "  [1, 2, 3]␣␣
-␣␣∎
-"
+     :yaml "  [1, 2, 3]  
+  "
      :json "\"[\\n  1,\\n  2,\\n  3\\n]\\n\""
      :fail nil
      :tags "flow whitespace")
@@ -457,10 +454,10 @@ plain\\value\\with\\backslashes
      :yaml "plain: text
   lines
 quoted: \"text
-  —»lines\"
+  	lines\"
 block: |
   text
-   »lines
+   	lines
 "
      :json "\"{\\n  \\\"plain\\\": \\\"text lines\\\",\\n  \\\"quoted\\\": \\\"text lines\\\",\\n  \\\"block\\\": \\\"text\\\\n \\\\tlines\\\\n\\\"\\n}\\n\""
      :fail nil
@@ -549,12 +546,12 @@ folded: >
      :name "Spec Example 6.5. Empty Lines"
      :yaml "Folding:
   \"Empty line
-   »
+   	
   as a line feed\"
 Chomping: |
   Clipped empty lines
-␣
-↵
+ 
+
 "
      :json "\"{\\n  \\\"Folding\\\": \\\"Empty line\\\\nas a line feed\\\",\\n  \\\"Chomping\\\": \\\"Clipped empty lines\\\\n\\\"\\n}\\n\""
      :fail nil
@@ -570,9 +567,9 @@ Chomping: |
     (:id "5LLU"
      :name "Block scalar with wrong indented line after spaces only"
      :yaml "block scalar: >
-␣
-␣␣
-␣␣␣
+ 
+  
+   
  invalid
 "
      :json nil
@@ -671,9 +668,9 @@ bar: 42
      :tags "sequence")
     (:id "6BCT"
      :name "Spec Example 6.3. Separation Spaces"
-     :yaml "- foo:—» bar
+     :yaml "- foo:	 bar
 - - baz
-  -»baz
+  -	baz
 "
      :json "\"[\\n  {\\n    \\\"foo\\\": \\\"bar\\\"\\n  },\\n  [\\n    \\\"baz\\\",\\n    \\\"baz\\\"\\n  ]\\n]\\n\""
      :fail nil
@@ -689,8 +686,8 @@ bar: 42
      :tags "anchor complex-key flow mapping sequence")
     (:id "6CA3"
      :name "Tab indented top flow"
-     :yaml "————»[
-————»]
+     :yaml "	[
+	]
 "
      :json "\"[]\\n\""
      :fail nil
@@ -710,8 +707,8 @@ bar: 42
      :name "Block Scalar Keep"
      :yaml "--- |+
  ab
-␣
-␣␣
+ 
+  
 ...
 "
      :json "\"\\\"ab\\\\n\\\\n \\\\n\\\"\\n\""
@@ -728,7 +725,7 @@ bar: 42
      :name "Spec Example 6.1. Indentation Spaces"
      :yaml "  # Leading comment line spaces are
    # neither content nor indentation.
-␣␣␣␣
+    
 Not indented:
  By one space: |
     By four
@@ -736,7 +733,7 @@ Not indented:
  Flow style: [    # Leading spaces
    By two,        # in flow style
   Also by two,    # are neither
-  —»Still by two   # content nor
+  	Still by two   # content nor
     ]             # indentation.
 "
      :json "\"{\\n  \\\"Not indented\\\": {\\n    \\\"By one space\\\": \\\"By four\\\\n  spaces\\\\n\\\",\\n    \\\"Flow style\\\": [\\n      \\\"By two\\\",\\n      \\\"Also by two\\\",\\n      \\\"Still by two\\\"\\n    ]\\n  }\\n}\\n\""
@@ -860,8 +857,8 @@ b: *anchor
      :name "Spec Example 6.8. Flow Folding [1.3]"
      :yaml "---
 \"
-  foo␣
-␣
+  foo 
+ 
     bar
 
   baz
@@ -918,8 +915,8 @@ g: h
      :name "Block Scalar Strip [1.3]"
      :yaml "--- |-
  ab
-␣
-␣
+ 
+ 
 ...
 "
      :json "\"\\\"ab\\\"\\n\""
@@ -929,8 +926,8 @@ g: h
      :name "Spec Example 7.6. Double Quoted Lines"
      :yaml "\" 1st non-empty
 
- 2nd non-empty␣
-———»3rd non-empty \"
+ 2nd non-empty 
+	3rd non-empty \"
 "
      :json "\"\\\" 1st non-empty\\\\n2nd non-empty 3rd non-empty \\\"\\n\""
      :fail nil
@@ -1087,9 +1084,9 @@ key ends with two colons::: value
     (:id "8G76"
      :name "Spec Example 6.10. Comment Lines"
      :yaml "  # Comment
-␣␣␣
-↵
-↵
+   
+
+
 "
      :json "\"\""
      :fail nil
@@ -1165,8 +1162,8 @@ single: pair,
      :name "Spec Example 6.6. Line Folding [1.3]"
      :yaml "--- >-
   trimmed
-␣␣
-␣
+  
+ 
 
   as
   space
@@ -1187,7 +1184,7 @@ single: pair,
     (:id "96NN/00"
      :name "Leading tab content in literals"
      :yaml "foo: |-
- ——»bar
+ 	bar
 "
      :json "\"{\\\"foo\\\":\\\"\\\\tbar\\\"}\\n\""
      :fail nil
@@ -1195,8 +1192,7 @@ single: pair,
     (:id "96NN/01"
      :name "96NN/01"
      :yaml "foo: |-
- ——»bar∎
-"
+ 	bar"
      :json nil
      :fail nil
      :tags "")
@@ -1393,7 +1389,7 @@ double: \"text\"
      :yaml "---
 \" 1st non-empty
 
- 2nd non-empty␣
+ 2nd non-empty 
  3rd non-empty \"
 "
      :json "\"\\\" 1st non-empty\\\\n2nd non-empty 3rd non-empty \\\"\\n\""
@@ -1429,7 +1425,7 @@ double: \"text\"
     (:id "9YRD"
      :name "Multiline Scalar at Top Level"
      :yaml "a
-b␣␣
+b  
   c
 d
 
@@ -1441,8 +1437,8 @@ e
     (:id "A2M4"
      :name "Spec Example 6.2. Indentation Indicators"
      :yaml "? a
-: -»b
-  -  -—»c
+: -	b
+  -  -	c
      - d
 "
      :json "\"{\\n  \\\"a\\\": [\\n    \\\"b\\\",\\n    [\\n      \\\"c\\\",\\n      \\\"d\\\"\\n    ]\\n  ]\\n}\\n\""
@@ -1481,8 +1477,7 @@ d:
      :tags "scalar sequence")
     (:id "AVM7"
      :name "Empty Stream"
-     :yaml "∎
-"
+     :yaml ""
      :json "\"\""
      :fail nil
      :tags "edge")
@@ -1509,8 +1504,8 @@ four: 5
      :yaml "--- >
  folded
  text
-↵
-↵
+
+
 "
      :json "\"\\\"folded text\\\\n\\\"\\n\""
      :fail nil
@@ -1757,10 +1752,10 @@ alias: *anchor
      :tags "spec flow sequence scalar")
     (:id "DC7X"
      :name "Various trailing tabs"
-     :yaml "a: b———»
-seq:———»
- - a———»
-c: d———»#X
+     :yaml "a: b	
+seq:	
+ - a	
+c: d	#X
 "
      :json "\"{\\n  \\\"a\\\": \\\"b\\\",\\n  \\\"seq\\\": [\\n    \\\"a\\\"\\n  ],\\n  \\\"c\\\": \\\"d\\\"\\n}\\n\""
      :fail nil
@@ -1775,7 +1770,7 @@ c: d———»#X
      :tags "double whitespace")
     (:id "DE56/01"
      :name "DE56/01"
-     :yaml "\"2 trailing\\t␣␣
+     :yaml "\"2 trailing\\t  
     tab\"
 "
      :json "\"\\\"2 trailing\\\\t tab\\\"\\n\""
@@ -1783,7 +1778,7 @@ c: d———»#X
      :tags "")
     (:id "DE56/02"
      :name "DE56/02"
-     :yaml "\"3 trailing\\————»
+     :yaml "\"3 trailing\\	
     tab\"
 "
      :json "\"\\\"3 trailing\\\\t tab\\\"\\n\""
@@ -1791,7 +1786,7 @@ c: d———»#X
      :tags "")
     (:id "DE56/03"
      :name "DE56/03"
-     :yaml "\"4 trailing\\————»␣␣
+     :yaml "\"4 trailing\\	  
     tab\"
 "
      :json "\"\\\"4 trailing\\\\t tab\\\"\\n\""
@@ -1799,7 +1794,7 @@ c: d———»#X
      :tags "")
     (:id "DE56/04"
      :name "DE56/04"
-     :yaml "\"5 trailing—»
+     :yaml "\"5 trailing	
     tab\"
 "
      :json "\"\\\"5 trailing tab\\\"\\n\""
@@ -1807,7 +1802,7 @@ c: d———»#X
      :tags "")
     (:id "DE56/05"
      :name "DE56/05"
-     :yaml "\"6 trailing—»␣␣
+     :yaml "\"6 trailing	  
     tab\"
 "
      :json "\"\\\"6 trailing tab\\\"\\n\""
@@ -1853,7 +1848,7 @@ line3
     (:id "DK95/00"
      :name "Tabs that look like indentation"
      :yaml "foo:
- ———»bar
+ 	bar
 "
      :json "\"{\\n  \\\"foo\\\" : \\\"bar\\\"\\n}\\n\""
      :fail nil
@@ -1861,7 +1856,7 @@ line3
     (:id "DK95/01"
      :name "DK95/01"
      :yaml "foo: \"bar
-————»baz\"
+	baz\"
 "
      :json nil
      :fail t
@@ -1869,14 +1864,14 @@ line3
     (:id "DK95/02"
      :name "DK95/02"
      :yaml "foo: \"bar
-  ——»baz\"
+  	baz\"
 "
      :json "\"{\\n  \\\"foo\\\" : \\\"bar baz\\\"\\n}\\n\""
      :fail nil
      :tags "")
     (:id "DK95/03"
      :name "DK95/03"
-     :yaml " ———»
+     :yaml " 	
 foo: 1
 "
      :json "\"{\\n  \\\"foo\\\" : 1\\n}\\n\""
@@ -1885,7 +1880,7 @@ foo: 1
     (:id "DK95/04"
      :name "DK95/04"
      :yaml "foo: 1
-————»
+	
 bar: 2
 "
      :json "\"{\\n  \\\"foo\\\" : 1,\\n  \\\"bar\\\" : 2\\n}\\n\""
@@ -1894,7 +1889,7 @@ bar: 2
     (:id "DK95/05"
      :name "DK95/05"
      :yaml "foo: 1
- ———»
+ 	
 bar: 2
 "
      :json "\"{\\n  \\\"foo\\\" : 1,\\n  \\\"bar\\\" : 2\\n}\\n\""
@@ -1904,7 +1899,7 @@ bar: 2
      :name "DK95/06"
      :yaml "foo:
   a: 1
-  ——»b: 2
+  	b: 2
 "
      :json nil
      :fail t
@@ -1912,7 +1907,7 @@ bar: 2
     (:id "DK95/07"
      :name "DK95/07"
      :yaml "%YAML 1.2
-————»
+	
 ---
 "
      :json "\"null\\n\""
@@ -1921,7 +1916,7 @@ bar: 2
     (:id "DK95/08"
      :name "DK95/08"
      :yaml "foo: \"bar
- ———» ——» baz ——» ——» \"
+ 	 	 baz 	 	 \"
 "
      :json "\"{\\n  \\\"foo\\\" : \\\"bar baz \\\\t \\\\t \\\"\\n}\\n\""
      :fail nil
@@ -1938,11 +1933,11 @@ bar: 2
     (:id "DWX9"
      :name "Spec Example 8.8. Literal Content"
      :yaml "|
-␣
-␣␣
+ 
+  
   literal
-␣␣␣
-␣␣
+   
+  
   text
 
  # Comment
@@ -1991,7 +1986,7 @@ scalar2
      :name "Multiline Scalar at Top Level [1.3]"
      :yaml "---
 a
-b␣␣
+b  
   c
 d
 
@@ -2048,13 +2043,13 @@ b: >2
   # Comments:
 strip: |-
   # text
-␣␣
+  
  # Clip
   # comments:
 
 clip: |
   # text
-␣
+ 
  # Keep
   # comments:
 
@@ -2168,8 +2163,8 @@ c
      :yaml ">
  folded
  text
-↵
-↵
+
+
 "
      :json "\"\\\"folded text\\\\n\\\"\\n\""
      :fail nil
@@ -2216,14 +2211,14 @@ fifteen: d
      :yaml "foo: 1
 
 bar: 2
-␣␣␣␣
+    
 text: |
   a
-␣␣␣␣
+    
   b
 
   c
-␣
+ 
   d
 "
      :json "\"{\\n  \\\"foo\\\": 1,\\n  \\\"bar\\\": 2,\\n  \\\"text\\\": \\\"a\\\\n  \\\\nb\\\\n\\\\nc\\\\n\\\\nd\\\\n\\\"\\n}\\n\""
@@ -2302,8 +2297,8 @@ double: \"quoted \\' scalar\"
      :name "Spec Example 7.12. Plain Lines"
      :yaml "1st non-empty
 
- 2nd non-empty␣
-———»3rd non-empty
+ 2nd non-empty 
+	3rd non-empty
 "
      :json "\"\\\"1st non-empty\\\\n2nd non-empty 3rd non-empty\\\"\\n\""
      :fail nil
@@ -2327,10 +2322,10 @@ double: \"quoted \\' scalar\"
     (:id "J3BT"
      :name "Spec Example 5.12. Tabs and Spaces"
      :yaml "# Tabs and spaces
-quoted: \"Quoted ———»\"
-block:—»|
+quoted: \"Quoted 	\"
+block:	|
   void main() {
-  —»printf(\"Hello, world!\\n\");
+  	printf(\"Hello, world!\\n\");
   }
 "
      :json "\"{\\n  \\\"quoted\\\": \\\"Quoted \\\\t\\\",\\n  \\\"block\\\": \\\"void main() {\\\\n\\\\tprintf(\\\\\\\"Hello, world!\\\\\\\\n\\\\\\\");\\\\n}\\\\n\\\"\\n}\\n\""
@@ -2389,8 +2384,8 @@ rbi:
     (:id "JEF9/00"
      :name "Trailing whitespace in streams"
      :yaml "- |+
-↵
-↵
+
+
 "
      :json "\"[\\n  \\\"\\\\n\\\\n\\\"\\n]\\n\""
      :fail nil
@@ -2398,7 +2393,7 @@ rbi:
     (:id "JEF9/01"
      :name "JEF9/01"
      :yaml "- |+
-␣␣␣
+   
 "
      :json "\"[\\n  \\\"\\\\n\\\"\\n]\\n\""
      :fail nil
@@ -2406,8 +2401,7 @@ rbi:
     (:id "JEF9/02"
      :name "JEF9/02"
      :yaml "- |+
-␣␣␣∎
-"
+   "
      :json nil
      :fail nil
      :tags "")
@@ -2509,8 +2503,8 @@ key3: \"quoted3\"
      :name "Spec Example 6.6. Line Folding"
      :yaml ">-
   trimmed
-␣␣
-␣
+  
+ 
 
   as
   space
@@ -2520,7 +2514,7 @@ key3: \"quoted3\"
      :tags "folded spec whitespace scalar 1.3-err")
     (:id "K54U"
      :name "Tab after document header"
-     :yaml "---»scalar
+     :yaml "---	scalar
 "
      :json "\"\\\"scalar\\\"\\n\""
      :fail nil
@@ -2532,7 +2526,7 @@ key3: \"quoted3\"
 clip: >
 
 keep: |+
-↵
+
 "
      :json "\"{\\n  \\\"strip\\\": \\\"\\\",\\n  \\\"clip\\\": \\\"\\\",\\n  \\\"keep\\\": \\\"\\\\n\\\"\\n}\\n\""
      :fail nil
@@ -2546,14 +2540,14 @@ keep: |+
      :tags "double whitespace")
     (:id "KH5V/01"
      :name "KH5V/01"
-     :yaml "\"2 inline\\——»tab\"
+     :yaml "\"2 inline\\	tab\"
 "
      :json "\"\\\"2 inline\\\\ttab\\\"\\n\""
      :fail nil
      :tags "")
     (:id "KH5V/02"
      :name "KH5V/02"
-     :yaml "\"3 inline———»tab\"
+     :yaml "\"3 inline	tab\"
 "
      :json "\"\\\"3 inline\\\\ttab\\\"\\n\""
      :fail nil
@@ -2613,7 +2607,7 @@ string\"
      :name "Trailing line of spaces"
      :yaml "foo: |
   x
-␣␣␣
+   
 "
      :json "\"{\\n  \\\"foo\\\" : \\\"x\\\\n \\\\n\\\"\\n}\\n\""
      :fail nil
@@ -2622,8 +2616,7 @@ string\"
      :name "L24T/01"
      :yaml "foo: |
   x
-␣␣␣∎
-"
+   "
      :json "\"{\\n  \\\"foo\\\" : \\\"x\\\\n \\\\n\\\"\\n}\\n\""
      :fail nil
      :tags "")
@@ -2705,10 +2698,10 @@ string\"
      :name "Literal Block Scalar"
      :yaml "a: |
  ab
-␣
+ 
  cd
  ef
-␣
+ 
 
 ...
 "
@@ -2799,9 +2792,9 @@ document
      :name "Spec Example 8.7. Literal Scalar"
      :yaml "|
  literal
- ——»text
-↵
-↵
+ 	text
+
+
 "
      :json "\"\\\"literal\\\\n\\\\ttext\\\\n\\\"\\n\""
      :fail nil
@@ -2809,9 +2802,9 @@ document
     (:id "MJS9"
      :name "Spec Example 6.7. Block Folding"
      :yaml ">
-  foo␣
-␣
-  —» bar
+  foo 
+ 
+  	 bar
 
   baz
 "
@@ -2846,7 +2839,7 @@ document
      :tags "")
     (:id "MUS6/03"
      :name "MUS6/03"
-     :yaml "%YAML ——» 1.1
+     :yaml "%YAML 	 1.1
 ---
 "
      :json nil
@@ -2887,8 +2880,8 @@ document
      :name "Block Scalar Strip"
      :yaml "|-
  ab
-␣
-␣
+ 
+ 
 ...
 "
      :json "\"\\\"ab\\\"\\n\""
@@ -2930,11 +2923,11 @@ document
      :yaml "---
 a: '
   '
-b: '␣␣
+b: '  
   '
 c: \"
   \"
-d: \"␣␣
+d: \"  
   \"
 e: '
 
@@ -2959,7 +2952,7 @@ h: \"
      :yaml "key:
   value
   with
-  —»
+  	
   tabs
 "
      :json "\"{\\n  \\\"key\\\": \\\"value with\\\\ntabs\\\"\\n}\\n\""
@@ -2968,8 +2961,8 @@ h: \"
     (:id "NHX8"
      :name "Empty Lines at End of Document"
      :yaml ":
-↵
-↵
+
+
 "
      :json nil
      :fail nil
@@ -3005,11 +2998,11 @@ key: value
      :tags "empty-key mapping")
     (:id "NP9H"
      :name "Spec Example 7.5. Double Quoted Line Breaks"
-     :yaml "\"folded␣
-to a space,»
-␣
-to a line feed, or »\\
- \\ »non-content\"
+     :yaml "\"folded 
+to a space,	
+ 
+to a line feed, or 	\\
+ \\ 	non-content\"
 "
      :json "\"\\\"folded to a space,\\\\nto a line feed, or \\\\t \\\\tnon-content\\\"\\n\""
      :fail nil
@@ -3051,8 +3044,8 @@ to a line feed, or »\\
      :yaml "key:    # Comment
         # lines
   value
-↵
-↵
+
+
 "
      :json "\"{\\n  \\\"key\\\": \\\"value\\\"\\n}\\n\""
      :fail nil
@@ -3075,8 +3068,8 @@ national:
      :name "Spec Example 7.9. Single Quoted Lines"
      :yaml "' 1st non-empty
 
- 2nd non-empty␣
-———»3rd non-empty '
+ 2nd non-empty 
+	3rd non-empty '
 "
      :json "\"\\\" 1st non-empty\\\\n2nd non-empty 3rd non-empty \\\"\\n\""
      :fail nil
@@ -3119,7 +3112,7 @@ key3: \"quoted3\"
      :tags "error mapping double")
     (:id "Q5MG"
      :name "Tab at beginning of line followed by a flow mapping"
-     :yaml "———»{}
+     :yaml "	{}
 "
      :json "\"{}\\n\""
      :fail nil
@@ -3138,11 +3131,11 @@ key3: \"quoted3\"
     (:id "Q8AD"
      :name "Spec Example 7.5. Double Quoted Line Breaks [1.3]"
      :yaml "---
-\"folded␣
+\"folded 
 to a space,
-␣
-to a line feed, or »\\
- \\ »non-content\"
+ 
+to a line feed, or 	\\
+ \\ 	non-content\"
 "
      :json "\"\\\"folded to a space,\\\\nto a line feed, or \\\\t \\\\tnon-content\\\"\\n\""
      :fail nil
@@ -3204,13 +3197,13 @@ e: f
      :yaml "- |
  detected
 - >
-␣
-␣␣
+ 
+  
   # detected
 - |1
   explicit
 - >
- ——»
+ 	
  detected
 "
      :json "\"[\\n  \\\"detected\\\\n\\\",\\n  \\\"\\\\n\\\\n# detected\\\\n\\\",\\n  \\\" explicit\\\\n\\\",\\n  \\\"\\\\t\\\\ndetected\\\\n\\\"\\n]\\n\""
@@ -3374,9 +3367,9 @@ folded: > first line
     (:id "S98Z"
      :name "Block scalar with more spaces than first content line"
      :yaml "empty block scalar: >
-␣
-␣␣
-␣␣␣
+ 
+  
+   
  # comment
 "
      :json nil
@@ -3424,15 +3417,13 @@ seq:
      :tags "anchor indent sequence")
     (:id "SM9W/00"
      :name "Single character streams"
-     :yaml "-∎
-"
+     :yaml "-"
      :json "\"[null]\\n\""
      :fail nil
      :tags "sequence")
     (:id "SM9W/01"
      :name "SM9W/01"
-     :yaml ":∎
-"
+     :yaml ":"
      :json nil
      :fail nil
      :tags "mapping")
@@ -3486,11 +3477,11 @@ rbi: 147   # Runs Batted In
     (:id "T26H"
      :name "Spec Example 8.8. Literal Content [1.3]"
      :yaml "--- |
-␣
-␣␣
+ 
+  
   literal
-␣␣␣
-␣␣
+   
+  
   text
 
  # Comment
@@ -3503,7 +3494,7 @@ rbi: 147   # Runs Batted In
      :yaml "---
 ' 1st non-empty
 
- 2nd non-empty␣
+ 2nd non-empty 
  3rd non-empty '
 "
      :json "\"\\\" 1st non-empty\\\\n2nd non-empty 3rd non-empty \\\"\\n\""
@@ -3513,9 +3504,9 @@ rbi: 147   # Runs Batted In
      :name "Spec Example 8.7. Literal Scalar [1.3]"
      :yaml "--- |
  literal
- ——»text
-↵
-↵
+ 	text
+
+
 "
      :json "\"\\\"literal\\\\n\\\\ttext\\\\n\\\"\\n\""
      :fail nil
@@ -3550,9 +3541,9 @@ invalid
     (:id "TL85"
      :name "Spec Example 6.8. Flow Folding"
      :yaml "\"
-  foo␣
-␣
-  —» bar
+  foo 
+ 
+  	 bar
 
   baz
 \"
@@ -3565,7 +3556,7 @@ invalid
      :yaml ">
  ab
  cd
-␣
+ 
  ef
 
 
@@ -3726,7 +3717,7 @@ comments:
      :name "Legal tab after indentation"
      :yaml "x:
  - x
-  ——»x
+  	x
 "
      :json "\"{\\n  \\\"x\\\": [\\n    \\\"x x\\\"\\n  ]\\n}\\n\""
      :fail nil
@@ -3810,7 +3801,7 @@ b: *:@*!$\"<foo>:
      :name "Literal block scalar with more spaces in first line"
      :yaml "---
 block scalar: |
-␣␣␣␣␣
+     
   more spaces at the beginning
   are invalid
 "
@@ -3869,8 +3860,8 @@ scalar
   as a line feed\"
 Chomping: |
   Clipped empty lines
-␣
-↵
+ 
+
 "
      :json "\"{\\n  \\\"Folding\\\": \\\"Empty line\\\\nas a line feed\\\",\\n  \\\"Chomping\\\": \\\"Clipped empty lines\\\\n\\\"\\n}\\n\""
      :fail nil
@@ -3908,7 +3899,7 @@ key: &an:chor value
     (:id "Y79Y/00"
      :name "Tabs in various contexts"
      :yaml "foo: |
-————»
+	
 bar: 1
 "
      :json nil
@@ -3917,7 +3908,7 @@ bar: 1
     (:id "Y79Y/01"
      :name "Y79Y/01"
      :yaml "foo: |
- ———»
+ 	
 bar: 1
 "
      :json "\"{\\n  \\\"foo\\\": \\\"\\\\t\\\\n\\\",\\n  \\\"bar\\\": 1\\n}\\n\""
@@ -3926,7 +3917,7 @@ bar: 1
     (:id "Y79Y/02"
      :name "Y79Y/02"
      :yaml "- [
-————»
+	
  foo
  ]
 "
@@ -3936,7 +3927,7 @@ bar: 1
     (:id "Y79Y/03"
      :name "Y79Y/03"
      :yaml "- [
-————»foo,
+	foo,
  foo
  ]
 "
@@ -3945,21 +3936,21 @@ bar: 1
      :tags "")
     (:id "Y79Y/04"
      :name "Y79Y/04"
-     :yaml "-———»-
+     :yaml "-	-
 "
      :json nil
      :fail t
      :tags "")
     (:id "Y79Y/05"
      :name "Y79Y/05"
-     :yaml "- ——»-
+     :yaml "- 	-
 "
      :json nil
      :fail t
      :tags "")
     (:id "Y79Y/06"
      :name "Y79Y/06"
-     :yaml "?———»-
+     :yaml "?	-
 "
      :json nil
      :fail t
@@ -3967,14 +3958,14 @@ bar: 1
     (:id "Y79Y/07"
      :name "Y79Y/07"
      :yaml "? -
-:———»-
+:	-
 "
      :json nil
      :fail t
      :tags "")
     (:id "Y79Y/08"
      :name "Y79Y/08"
-     :yaml "?———»key:
+     :yaml "?	key:
 "
      :json nil
      :fail t
@@ -3982,14 +3973,14 @@ bar: 1
     (:id "Y79Y/09"
      :name "Y79Y/09"
      :yaml "? key:
-:———»key:
+:	key:
 "
      :json nil
      :fail t
      :tags "")
     (:id "Y79Y/10"
      :name "Y79Y/10"
-     :yaml "-———»-1
+     :yaml "-	-1
 "
      :json "\"[\\n  -1\\n]\\n\""
      :fail nil

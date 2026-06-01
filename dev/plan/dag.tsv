@@ -1,0 +1,26 @@
+KEY	SPRINT	TITLE	LABELS	DEPS	DESC
+src-cursor	1	Input source & character cursor	infra,parser	-	Position-tracked peek/advance over string or stream (src/source.lisp). Prerequisite for all reading.
+conditions	1	Condition taxonomy & loud-failure contract	infra	-	yaml-error hierarchy; every failure signals with position, never a sentinel (src/conditions.lisp).
+harness	1	Conformance harness + vendored test-suite	infra,test	-	Vendor yaml-test-suite (351 cases); Parachute runner loads each case, compares events/JSON, honors the fail flag, maintains a known-failing list.
+indent-ws	2	Indentation & whitespace engine	parser,whitespace,indent	src-cursor	Column tracking, indentation context stack, line-fold primitives. Tags: whitespace(60), indent(31).
+plain-scalars	2	Plain scalars + core-schema resolution	parser,scalar	src-cursor;conditions	resolve-scalar: null->CL:NULL, false->NIL, true->T, int, float, else string. Tags: scalar(88), simple, empty.
+comments	2	Comment handling	parser,comment	src-cursor	Strip '#' comments between tokens and lines. Tag: comment(39).
+doc-framing	2	Document framing: --- / ... / streams	parser,header,footer,document	src-cursor	Document start/end markers and multi-document streams. Tags: header(23), footer(13), document.
+block-seq	3	Block sequences	parser,sequence	indent-ws;plain-scalars	'- item' block sequences -> vectors. Tag: sequence(82).
+block-map	3	Block mappings	parser,mapping	indent-ws;plain-scalars	'key: value' block mappings -> hash-tables (test equal). Tag: mapping(123).
+quoted-scalars	3	Single- & double-quoted scalars	parser,scalar,double,single	plain-scalars	Quoting and escape handling. Tags: double(32), single(9).
+directives	3	Directives %YAML / %TAG	parser,directive	doc-framing	%YAML version and %TAG handle declarations. Tag: directive(20).
+block-scalars	4	Literal & folded block scalars	parser,literal,folded	indent-ws;block-map	'|' literal and '>' folded with indentation indicators and chomping. Tags: literal(33), folded(29).
+flow-collections	4	Flow sequences & mappings	parser,flow	block-map;quoted-scalars	Inline [..] and {..} collections plus flow scalars. Tag: flow(75).
+explicit-keys	4	Explicit keys (?)	parser,explicit-key	block-map	'?'-marked mapping keys. Tag: explicit-key(22).
+complex-keys	5	Complex & empty keys	parser,complex-key,empty-key	explicit-keys;flow-collections	Non-scalar keys and empty/absent keys. Tags: complex-key(8), empty-key(9).
+anchors	5	Anchors (&)	parser,anchor	block-seq;block-map;flow-collections	Anchor any node; record in the anchor table. Tag: anchor(25).
+tags-resolution	5	Tags: !!type / !local / unknown	parser,tag,local-tag,unknown-tag	plain-scalars;directives	Explicit, local, and unknown tag resolution. Tags: tag(40), local-tag(8), unknown-tag(10).
+aliases	6	Aliases (*)	parser,alias	anchors	'*ref' resolved by shared identity; undefined alias -> yaml-reference-error. Tag: alias(18).
+merge-keys	6	Merge keys (<<)	parser,mapping	block-map;aliases	'<<:' merges an aliased mapping into the current mapping.
+duplicate-keys	6	Duplicate-key detection	parser,error	block-map	Duplicate mapping key signals an error (loud, no last-wins). Tag: duplicate-key(1).
+error-cases	7	Comprehensive invalid-input errors	parser,error	block-seq;block-map;flow-collections;quoted-scalars;block-scalars;anchors;aliases;tags-resolution;directives	All invalid-input cases signal the correct condition with position. Tags: error(74), libyaml-err(4).
+version-semantics	7	YAML 1.3 divergence handling	parser,spec	plain-scalars;directives;doc-framing	1.3-err / 1.3-mod / upto-1.2 version-dependent behavior. Tags: 1.3-err(30), 1.3-mod(22), upto-1.2(12).
+edge-cases	7	Edge / boundary cases	parser,edge	flow-collections;block-scalars;complex-keys	Boundary conditions. Tag: edge(7).
+spec-conformance	7	Full spec-example conformance	parser,spec,integration	error-cases;version-semantics;merge-keys;tags-resolution;complex-keys	All official spec examples green. Tag: spec(114). Capstone of the parser.
+emitter	7	Emitter + round-trip	emit	spec-conformance	Native value -> YAML; parse->emit->parse structural identity. Secondary deliverable.

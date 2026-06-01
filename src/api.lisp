@@ -13,15 +13,24 @@
 return one native Lisp value. Signals YAML-PARSE-ERROR on malformed input. If
 INPUT contains more than one document, signals an error unless
 ALLOW-MULTIPLE-DOCUMENTS is true, in which case the first document is returned."
-  (let* ((source (make-source input))
+  (let* ((*document-ended-explicitly* nil)
+         (source (make-source input))
          (result (read-document source)))
     (source-skip-whitespace-and-comments source)
     (unless (or allow-multiple-documents (source-eof-p source))
-      (unless (source-match-document-end source)
-        (when (source-match-document-start source)
-          (error 'yaml-parse-error
-                 :message "Multiple documents found; use PARSE-ALL or set :ALLOW-MULTIPLE-DOCUMENTS"
-                 :position (source-position source)))))
+      (cond
+        ((source-match-document-end source))
+        ((source-match-document-start source)
+         (error 'yaml-parse-error
+                :message "Multiple documents found; use PARSE-ALL or set :ALLOW-MULTIPLE-DOCUMENTS"
+                :position (source-position source)))
+        ;; A directive (`%`) after document content with no `...` terminator
+        ;; belongs to no document: malformed input.
+        ((and (eql (source-peek source) #\%)
+              (not *document-ended-explicitly*))
+         (error 'yaml-structure-error
+                :message "Directive after document content without document end marker"
+                :position (source-position source)))))
     result))
 
 (defun parse-all (input)

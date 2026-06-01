@@ -1,0 +1,57 @@
+{
+  "batch_id": "spawn-20260531-180939-cb328f7d",
+  "started_at": "2026-05-31T18:09:39.873853922-06:00",
+  "stagger_seconds": 60,
+  "total_agents": 6,
+  "prompts": [
+    {
+      "pane": "yaml-parther__cc_1",
+      "pane_id": "%31",
+      "order": 1,
+      "scheduled": "2026-05-31T18:09:47.986272696-06:00",
+      "sent": true,
+      "sent_at": "2026-05-31T18:09:51.939590285-06:00"
+    },
+    {
+      "pane": "yaml-parther__cc_2",
+      "pane_id": "%32",
+      "order": 2,
+      "scheduled": "2026-05-31T18:10:48.144381184-06:00",
+      "sent": true,
+      "sent_at": "2026-05-31T18:10:52.002531671-06:00"
+    },
+    {
+      "pane": "yaml-parther__cc_3",
+      "pane_id": "%33",
+      "order": 3,
+      "scheduled": "2026-05-31T18:11:48.318281551-06:00",
+      "sent": true,
+      "sent_at": "2026-05-31T18:11:52.195028697-06:00"
+    },
+    {
+      "pane": "yaml-parther__cc_4",
+      "pane_id": "%34",
+      "order": 4,
+      "scheduled": "2026-05-31T18:12:48.513056685-06:00",
+      "sent": true,
+      "sent_at": "2026-05-31T18:12:52.422191638-06:00"
+    },
+    {
+      "pane": "yaml-parther__cc_5",
+      "pane_id": "%35",
+      "order": 5,
+      "scheduled": "2026-05-31T18:13:48.66073879-06:00",
+      "sent": true,
+      "sent_at": "2026-05-31T18:13:52.52529129-06:00"
+    },
+    {
+      "pane": "yaml-parther__cc_6",
+      "pane_id": "%36",
+      "order": 6,
+      "scheduled": "2026-05-31T18:14:48.800712569-06:00",
+      "sent": true,
+      "sent_at": "2026-05-31T18:14:52.685485816-06:00"
+    }
+  ],
+  "completed_at": "2026-05-31T18:14:52.693471247-06:00"
+}

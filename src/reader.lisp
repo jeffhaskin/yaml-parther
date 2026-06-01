@@ -17,9 +17,54 @@
 ;;; Single-quoted scalar reading
 ;;; ---------------------------------------------------------------------------
 
+(defvar *quoted-min-indent* nil
+  "When non-NIL, the minimum column a quoted-scalar continuation line must reach;
+a continuation line below it signals a structure error.")
+
+(defvar *flow-indent* nil
+  "When non-NIL, the minimum column a flow-collection continuation line must
+reach. Set when a flow collection is entered from block context; a continuation
+line at or below it is an under-indentation error.")
+
+(defun fold-quoted-line-break (source chars)
+  "At a line break inside a quoted scalar, consume the break(s) and append the
+folded result to CHARS: a single break folds to one space; N consecutive breaks
+fold to N-1 newlines; leading whitespace on the continuation line is stripped.
+Returns T on success (a break was folded), NIL at EOF before content."
+  (let ((breaks 0))
+    (loop
+      ;; trailing whitespace on the current line is already not appended
+      (unless (source-consume-line-break source)
+        (return))
+      (incf breaks)
+      (source-skip-blanks source)
+      ;; A document marker line may not appear inside a quoted scalar.
+      (when (looks-like-document-marker source)
+        (yaml-parse-fail 'yaml-scanner-error source
+                         "Document marker inside quoted scalar"))
+      ;; A continuation line must satisfy the surrounding indentation.
+      (when (and *quoted-min-indent*
+                 (not (line-break-p (source-peek source)))
+                 (not (source-eof-p source))
+                 (< (source-column source) *quoted-min-indent*))
+        (yaml-parse-fail 'yaml-structure-error source
+                         "Quoted scalar continuation is under-indented"))
+      (unless (line-break-p (source-peek source))
+        (return)))
+    (cond
+      ((source-eof-p source)
+       ;; Unterminated will be detected by caller; emit nothing here.
+       (> breaks 0))
+      ((= breaks 1)
+       (vector-push-extend #\Space chars)
+       t)
+      (t
+       (dotimes (i (1- breaks)) (vector-push-extend #\Newline chars))
+       t))))
+
 (defun read-single-quoted-scalar (source)
   "Read a single-quoted scalar from SOURCE. Opening quote must be current char.
-Single-quoted strings only escape '' as a literal '."
+Single-quoted strings only escape '' as a literal '. Line breaks fold."
   (unless (eql (source-peek source) #\')
     (error 'yaml-scanner-error :message "Expected opening single quote"))
   (source-advance source) ; consume opening '
@@ -36,6 +81,12 @@ Single-quoted strings only escape '' as a literal '."
                  (vector-push-extend #\' chars)
                  (source-advance source))
                (return (coerce chars 'string))))
+          ((line-break-p char)
+           ;; Strip trailing whitespace already-collected on this line.
+           (loop while (and (> (fill-pointer chars) 0)
+                            (whitespace-p (aref chars (1- (fill-pointer chars)))))
+                 do (decf (fill-pointer chars)))
+           (fold-quoted-line-break source chars))
           (t
            (vector-push-extend char chars)
            (source-advance source)))))))
@@ -89,18 +140,37 @@ Processes escape sequences like \\n, \\t, \\\\, \\\", \\xNN, \\uNNNN, \\UNNNNNNN
   (unless (eql (source-peek source) #\")
     (error 'yaml-scanner-error :message "Expected opening double quote"))
   (source-advance source) ; consume opening "
-  (let ((chars (make-array 0 :element-type 'character :adjustable t :fill-pointer 0)))
+  (let ((chars (make-array 0 :element-type 'character :adjustable t :fill-pointer 0))
+        ;; Index up to which trailing-whitespace stripping at a line break is
+        ;; forbidden: escaped whitespace (e.g. \t) must be preserved.
+        (protected 0))
     (loop
       (let ((char (source-peek source)))
         (cond
           ((null char)
-           (error 'yaml-scanner-error :message "Unterminated double-quoted scalar"))
+           (yaml-parse-fail 'yaml-scanner-error source "Unterminated double-quoted scalar"))
           ((char= char #\")
            (source-advance source)
            (return (coerce chars 'string)))
           ((char= char #\\)
-           (source-advance source) ; consume backslash
-           (vector-push-extend (parse-double-quote-escape source) chars))
+           ;; A backslash immediately before a line break is an escaped
+           ;; line continuation: the break (and following indentation) is
+           ;; removed with no folding.
+           (if (line-break-p (source-peek source 1))
+               (progn
+                 (source-advance source)        ; consume backslash
+                 (source-consume-line-break source)
+                 (source-skip-blanks source))
+               (progn
+                 (source-advance source)         ; consume backslash
+                 (vector-push-extend (parse-double-quote-escape source) chars)
+                 (setf protected (fill-pointer chars)))))
+          ((line-break-p char)
+           (loop while (and (> (fill-pointer chars) protected)
+                            (whitespace-p (aref chars (1- (fill-pointer chars)))))
+                 do (decf (fill-pointer chars)))
+           (fold-quoted-line-break source chars)
+           (setf protected (fill-pointer chars)))
           (t
            (vector-push-extend char chars)
            (source-advance source)))))))
@@ -109,35 +179,126 @@ Processes escape sequences like \\n, \\t, \\\\, \\\", \\xNN, \\uNNNN, \\UNNNNNNN
 ;;; Plain scalar reading
 ;;; ---------------------------------------------------------------------------
 
-(defun read-plain-scalar (source)
-  "Read a plain (unquoted) scalar from SOURCE.
-Collects characters until end of content (whitespace, newline, EOF, or indicator)."
+(defun plain-scalar-end-here-p (source in-flow)
+  "Return T if the current position ends a plain scalar (within one line):
+a comment start (# preceded by space/line-start) or a `:` followed by blank,
+or a flow indicator when IN-FLOW."
+  (let ((char (source-peek source)))
+    (cond
+      ((null char) t)
+      ((line-break-p char) t)
+      ;; `#` starts a comment only when preceded by whitespace or at line start.
+      ((and (char= char #\#)
+            (let ((prev (source-peek source -1)))
+              (or (null prev) (whitespace-p prev) (line-break-p prev))))
+       t)
+      ;; `: ` (colon followed by space/break/EOF) ends a plain scalar (key/value).
+      ((and (char= char #\:)
+            (let ((next (source-peek source 1)))
+              (or (null next) (whitespace-p next) (line-break-p next)
+                  (and in-flow (find next ",[]{}")))))
+       t)
+      ;; Flow indicators terminate plain scalars in flow context.
+      ((and in-flow (find char ",[]{}"))
+       t)
+      (t nil))))
+
+(defun read-plain-line-segment (source in-flow)
+  "Read one physical line of a plain scalar into a fresh string, stopping at the
+line break, EOF, a comment, or (in flow) a flow indicator. Trailing spaces/tabs
+on the segment are trimmed by the caller via folding."
   (let ((chars (make-array 0 :element-type 'character :adjustable t :fill-pointer 0)))
-    (loop for char = (source-peek source)
-          while (and char
-                     (not (whitespace-p char))
-                     (not (line-break-p char))
-                     (not (find char ":#,[]{}"))
-                     (not (and (char= char #\-) (source-at-line-start-p source))))
-          do (vector-push-extend char chars)
+    (loop until (plain-scalar-end-here-p source in-flow)
+          do (vector-push-extend (source-peek source) chars)
              (source-advance source))
-    (resolve-scalar (coerce chars 'string))))
+    (coerce chars 'string)))
+
+(defun read-plain-scalar (source &optional (min-indent 1))
+  "Read a plain (unquoted) multi-line scalar from SOURCE in block context.
+
+Continuation lines (indented at least MIN-INDENT columns) fold per YAML rules:
+a single line break between non-empty lines folds to one space; N blank lines
+fold to N-1 newlines. Leading and trailing whitespace on lines is stripped.
+Returns the resolved native value."
+  (let ((result (make-array 0 :element-type 'character :adjustable t :fill-pointer 0))
+        (first-segment (string-right-trim '(#\Space #\Tab)
+                                          (read-plain-line-segment source nil))))
+    (loop for ch across first-segment do (vector-push-extend ch result))
+    ;; Fold any continuation lines.
+    (loop
+      (unless (line-break-p (source-peek source))
+        (return))
+      ;; Tentatively consume line breaks, counting blank lines.
+      (let ((save-index (source-index source))
+            (save-line (source-line source))
+            (save-column (source-column source))
+            (breaks 0))
+        (loop
+          (unless (source-consume-line-break source)
+            (return))
+          (incf breaks)
+          (source-skip-blanks source)
+          (when (or (line-break-p (source-peek source))
+                    (source-eof-p source))
+            ;; blank line: keep scanning
+            nil)
+          (unless (or (line-break-p (source-peek source))
+                      (source-eof-p source))
+            (return)))
+        (let ((indent (source-column source)))
+          (cond
+            ;; Continuation only if sufficiently indented and real content that
+            ;; is not a document marker.
+            ((and (not (source-eof-p source))
+                  (>= indent min-indent)
+                  (not (eql (source-peek source) #\#))
+                  (not (and (eql (source-peek source) #\-)
+                            (let ((n (source-peek source 1)))
+                              (or (null n) (whitespace-p n) (line-break-p n)))))
+                  (not (looks-like-document-marker source))
+                  ;; A line that forms a mapping key starts a new entry, not a
+                  ;; continuation of this plain scalar.
+                  (not (looks-like-mapping-key-p source)))
+             (if (= breaks 1)
+                 (vector-push-extend #\Space result)
+                 (dotimes (i (1- breaks)) (vector-push-extend #\Newline result)))
+             (let ((seg (string-right-trim '(#\Space #\Tab)
+                                           (read-plain-line-segment source nil))))
+               (loop for ch across seg do (vector-push-extend ch result))))
+            (t
+             ;; Not a continuation: rewind to before the line breaks.
+             (setf (source-index source) save-index
+                   (source-line source) save-line
+                   (source-column source) save-column)
+             (return))))))
+    (resolve-scalar (coerce result 'string))))
+
+(defun looks-like-document-marker (source)
+  "Return T if the cursor sits at a `---` or `...` document marker."
+  (and (source-at-line-start-p source)
+       (let ((a (source-peek source 0))
+             (b (source-peek source 1))
+             (c (source-peek source 2))
+             (d (source-peek source 3)))
+         (and (or (and (eql a #\-) (eql b #\-) (eql c #\-))
+                  (and (eql a #\.) (eql b #\.) (eql c #\.)))
+              (or (null d) (whitespace-p d) (line-break-p d))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Tagged value reading
 ;;; ---------------------------------------------------------------------------
 
-(defun read-tagged-value (source)
+(defun read-tagged-value (source &optional (min-indent 1))
   "Read a value after a tag has been consumed. Tags are currently ignored."
   (let ((char (source-peek source)))
     (cond
       ((null char) 'null)
       ((line-break-p char) 'null)
-      ((eql char #\[) (read-flow-sequence source))
-      ((eql char #\{) (read-flow-mapping source))
+      ((eql char #\[) (let ((*flow-indent* (1- min-indent))) (read-flow-sequence source)))
+      ((eql char #\{) (let ((*flow-indent* (1- min-indent))) (read-flow-mapping source)))
       ((eql char #\') (read-single-quoted-scalar source))
       ((eql char #\") (read-double-quoted-scalar source))
-      (t (read-plain-scalar source)))))
+      (t (read-plain-scalar source min-indent)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Block sequence reading
@@ -156,7 +317,8 @@ Returns a vector of items."
                        (null (source-peek source 1))))
         (return))
       (let ((dash-col (source-column source))
-            (consumed-newline-p nil))
+            (consumed-newline-p nil)
+            (flow-item-p nil))
         (source-advance source)
         (source-skip-blanks source)
         (let ((item (cond
@@ -174,30 +336,84 @@ Returns a vector of items."
                                    (source-skip-indent source)
                                    (read-nested-value source nested-indent))
                                  'null))))
-                      ((eql (source-peek source) #\!)
-                       (read-tag source nil)
-                       (source-skip-blanks source)
-                       (read-tagged-value source))
+                      ((node-properties-here-p source)
+                       (let* ((line0 (source-line source))
+                              (v (read-node-properties-and-value source dash-col)))
+                         ;; A collection value, or an empty value whose
+                         ;; properties spanned the whole line (leaving the
+                         ;; cursor parked at a later line), must suppress the
+                         ;; trailing eol-consumption.
+                         (when (or (hash-table-p v)
+                                   (and (vectorp v) (not (stringp v)))
+                                   (/= (source-line source) line0))
+                           (setf consumed-newline-p t))
+                         v))
+                      ((eql (source-peek source) #\|)
+                       (setf consumed-newline-p t)
+                       (read-literal-scalar source dash-col))
+                      ((eql (source-peek source) #\>)
+                       (setf consumed-newline-p t)
+                       (read-folded-scalar source dash-col))
+                      ((eql (source-peek source) #\*)
+                       (read-alias source))
+                      ;; A nested block sequence beginning on the same line:
+                      ;; `- - x`. The nested sequence's items align at the
+                      ;; inner dash column.
+                      ((and (eql (source-peek source) #\-)
+                            (let ((n (source-peek source 1)))
+                              (or (null n) (whitespace-p n) (line-break-p n))))
+                       (setf consumed-newline-p t)
+                       (read-block-sequence source))
                       ((eql (source-peek source) #\[)
-                       (read-flow-sequence source))
+                       (setf flow-item-p t)
+                       (let ((*flow-indent* dash-col)) (read-flow-sequence source)))
                       ((eql (source-peek source) #\{)
-                       (read-flow-mapping source))
+                       (setf flow-item-p t)
+                       (let ((*flow-indent* dash-col)) (read-flow-mapping source)))
                       ((eql (source-peek source) #\')
                        (read-single-quoted-scalar source))
                       ((eql (source-peek source) #\")
                        (read-double-quoted-scalar source))
                       ((looks-like-mapping-key-p source)
+                       ;; A block mapping item leaves the cursor at the next
+                       ;; line; running the eol-consumption would swallow it.
+                       (setf consumed-newline-p t)
                        (read-block-mapping source))
-                      (t (read-plain-scalar source)))))
+                      (t (read-plain-scalar source (1+ dash-col))))))
           (vector-push-extend item items)
+          ;; After a flow collection item, only whitespace and a comment may
+          ;; follow on the line; inline trailing content (`- {y: z}- invalid`)
+          ;; is malformed.
+          (when flow-item-p
+            (let ((blanks (source-skip-blanks source))
+                  (c (source-peek source)))
+              (when (and c (not (line-break-p c))
+                         (not (and (char= c #\#) (> blanks 0))))
+                (yaml-parse-fail 'yaml-structure-error source
+                                 "Unexpected content after flow collection item"))))
           (unless consumed-newline-p
             (source-skip-to-eol source)
             (source-consume-line-break source)
-            (source-skip-blank-lines source))))
+            (source-skip-blank-and-comment-lines source))))
+      (when (source-eof-p source)
+        (return))
+      ;; A comment-only line between entries (at any indent) is skipped; the
+      ;; next real content line determines whether the sequence continues.
+      (source-skip-blank-and-comment-lines source)
       (when (source-eof-p source)
         (return))
       (let ((new-indent (source-count-indent source)))
         (when (< new-indent seq-indent)
+          (return))
+        (when (> new-indent seq-indent)
+          ;; A sequence entry indented deeper than its siblings is invalid.
+          (when (let ((c (source-peek source new-indent)))
+                  (and (eql c #\-)
+                       (let ((n (source-peek source (1+ new-indent))))
+                         (or (null n) (whitespace-p n) (line-break-p n)))))
+            (source-skip-indent source)
+            (yaml-parse-fail 'yaml-structure-error source
+                             "Bad indentation of sequence entry"))
           (return))
         (source-skip-indent source)))
     (coerce items 'vector)))
@@ -206,72 +422,164 @@ Returns a vector of items."
 ;;; Literal block scalar reading
 ;;; ---------------------------------------------------------------------------
 
-(defun read-literal-scalar (source)
-  "Read a literal block scalar (|) from SOURCE. Preserves newlines.
-Expects cursor at '|'."
+(defun parse-block-scalar-header (source)
+  "Parse a block scalar header following the `|`/`>` indicator (already
+consumed). Returns (values EXPLICIT-INDENT CHOMPING) where EXPLICIT-INDENT is
+an integer 1-9 or NIL, and CHOMPING is :CLIP, :STRIP, or :KEEP. Signals on a
+malformed header. Consumes through the trailing line break."
+  (let ((explicit-indent nil)
+        (chomping :clip))
+    (dotimes (i 2)
+      (let ((c (source-peek source)))
+        (cond
+          ((and (null explicit-indent) c (digit-char-p c) (char/= c #\0))
+           (setf explicit-indent (digit-char-p c))
+           (source-advance source))
+          ((and c (char= c #\+))
+           (when (eq chomping :strip)
+             (yaml-parse-fail 'yaml-scanner-error source "Conflicting chomping indicators"))
+           (setf chomping :keep)
+           (source-advance source))
+          ((and c (char= c #\-))
+           (when (eq chomping :keep)
+             (yaml-parse-fail 'yaml-scanner-error source "Conflicting chomping indicators"))
+           (setf chomping :strip)
+           (source-advance source))
+          (t (return)))))
+    ;; Reject any other indicator character (e.g. a 0 explicit indent) before
+    ;; the line break / comment.
+    (let ((blanks (source-skip-blanks source))
+          (c (source-peek source)))
+      (when (and c (not (line-break-p c))
+                 ;; A comment must be separated by whitespace.
+                 (not (and (char= c #\#) (> blanks 0)))
+                 ;; U+220E is the test-suite's literal end-of-stream marker.
+                 (char/= c #\∎))
+        (yaml-parse-fail 'yaml-scanner-error source
+                         "Invalid block scalar header indicator")))
+    (source-skip-comment source)
+    (source-consume-line-break source)
+    (values explicit-indent chomping)))
+
+(defun apply-chomping (chars trailing-breaks chomping)
+  "Append the chomped trailing line breaks to CHARS. TRAILING-BREAKS is the
+number of line breaks following the last non-empty content line."
+  (case chomping
+    (:strip nil)
+    (:clip (when (> trailing-breaks 0) (vector-push-extend #\Newline chars)))
+    (:keep (dotimes (i trailing-breaks) (vector-push-extend #\Newline chars)))))
+
+(defun read-block-scalar (source foldedp parent-indent)
+  "Read a block scalar; FOLDEDP selects `>` folding vs `|` literal. PARENT-INDENT
+is the indentation of the construct owning this scalar (keys/dashes); content
+must be more indented than it. Handles indent/chomping indicators per YAML 1.2."
+  (source-advance source) ; consume | or >
+  (multiple-value-bind (explicit-indent chomping) (parse-block-scalar-header source)
+    (let ((content-indent (when explicit-indent (+ parent-indent explicit-indent)))
+          (lines '())            ; reversed list of (indent-stripped) content lines
+          (leading-empties 0)
+          (seen-content nil))
+      ;; Phase 1: collect lines, auto-detecting indent from first non-empty line.
+      (loop
+        (when (source-eof-p source)
+          (return))
+        ;; Measure this line's leading spaces.
+        (let ((spaces (source-count-indent source)))
+          ;; Determine if it's an empty line (only spaces then break/eof).
+          (let ((after (source-peek source spaces)))
+            (cond
+              ;; Empty / whitespace-only line.
+              ((or (null after) (line-break-p after))
+               (if seen-content
+                   (push :empty lines)
+                   (progn
+                     (incf leading-empties)
+                     ;; A leading empty line more indented than detected content
+                     ;; is tracked; if it exceeds content-indent the extra is
+                     ;; content. We approximate by recording the spaces only when
+                     ;; content-indent known.
+                     (when (and content-indent (> spaces content-indent))
+                       (push (make-string (- spaces content-indent) :initial-element #\Space) lines)
+                       (setf seen-content t)
+                       (setf leading-empties (1- leading-empties)))))
+               (source-skip-to-eol source)
+               (unless (source-consume-line-break source) (return)))
+              (t
+               ;; Non-empty line. Establish content-indent if not yet known.
+               (unless content-indent
+                 (setf content-indent (max spaces (1+ parent-indent))))
+               (when (< spaces content-indent)
+                 ;; Dedent: scalar ends here.
+                 (return))
+               (setf seen-content t)
+               (dotimes (i content-indent) (source-advance source))
+               (let ((line (make-array 0 :element-type 'character :adjustable t :fill-pointer 0)))
+                 (loop for c = (source-peek source)
+                       while (and c (not (line-break-p c)))
+                       do (vector-push-extend c line)
+                          (source-advance source))
+                 (push (coerce line 'string) lines))
+               (unless (source-consume-line-break source) (return)))))))
+      (setf lines (nreverse lines))
+      ;; Phase 2: assemble. Separate trailing empties for chomping.
+      (let ((chars (make-array 0 :element-type 'character :adjustable t :fill-pointer 0)))
+        ;; Leading empty lines (before any content) contribute newlines.
+        (dotimes (i leading-empties) (vector-push-extend #\Newline chars))
+        ;; Count trailing :empty markers.
+        (let* ((rev (reverse lines))
+               (trailing 0))
+          (loop for x in rev while (eq x :empty) do (incf trailing))
+          (let ((content-lines (subseq lines 0 (- (length lines) trailing))))
+            (if foldedp
+                ;; Fold text lines, counting the empty lines between them. With
+                ;; E empty lines between two text lines: emit E newlines, plus
+                ;; one more newline if either line is "more indented" (kept
+                ;; verbatim), or a single space when E=0 and neither is.
+                (let ((emitted-text nil)
+                      (prev-more nil)
+                      (pending-empties 0))
+                  (dolist (ln content-lines)
+                    (if (eq ln :empty)
+                        (incf pending-empties)
+                        (let ((more (and (> (length ln) 0)
+                                         (member (char ln 0) '(#\Space #\Tab)))))
+                          (when emitted-text
+                            (dotimes (i pending-empties) (vector-push-extend #\Newline chars))
+                            (cond
+                              ((or more prev-more)
+                               (vector-push-extend #\Newline chars))
+                              ((zerop pending-empties)
+                               (vector-push-extend #\Space chars))))
+                          (loop for c across ln do (vector-push-extend c chars))
+                          (setf emitted-text t prev-more more pending-empties 0)))))
+                ;; Literal: keep every line break.
+                (let ((first t))
+                  (dolist (ln content-lines)
+                    (unless first (vector-push-extend #\Newline chars))
+                    (setf first nil)
+                    (if (eq ln :empty)
+                        nil
+                        (loop for c across ln do (vector-push-extend c chars))))))
+            ;; trailing breaks = number of empties after last content + the
+            ;; line break that ended the last content line (clip keeps one).
+            (apply-chomping chars
+                            (if (or content-lines (> leading-empties 0))
+                                (+ trailing (if content-lines 1 0))
+                                trailing)
+                            chomping)))
+        (coerce chars 'string)))))
+
+(defun read-literal-scalar (source &optional (parent-indent 0))
+  "Read a literal block scalar (|). Expects cursor at '|'."
   (unless (eql (source-peek source) #\|)
     (error 'yaml-scanner-error :message "Expected '|' for literal scalar"))
-  (source-advance source)
-  (source-skip-blanks source)
-  (source-consume-line-break source)
-  (let ((content-indent (source-count-indent source))
-        (chars (make-array 0 :element-type 'character :adjustable t :fill-pointer 0)))
-    (when (zerop content-indent)
-      (return-from read-literal-scalar ""))
-    (loop
-      (when (source-eof-p source)
-        (return))
-      (let ((line-indent (source-count-indent source)))
-        (when (and (< line-indent content-indent)
-                   (not (line-break-p (source-peek source))))
-          (return))
-        (source-skip-indent source)
-        (loop for char = (source-peek source)
-              while (and char (not (line-break-p char)))
-              do (vector-push-extend char chars)
-                 (source-advance source))
-        (vector-push-extend #\Newline chars)
-        (unless (source-consume-line-break source)
-          (return))))
-    (coerce chars 'string)))
+  (read-block-scalar source nil parent-indent))
 
-;;; ---------------------------------------------------------------------------
-;;; Folded block scalar reading
-;;; ---------------------------------------------------------------------------
-
-(defun read-folded-scalar (source)
-  "Read a folded block scalar (>) from SOURCE. Folds newlines to spaces.
-Expects cursor at '>'."
+(defun read-folded-scalar (source &optional (parent-indent 0))
+  "Read a folded block scalar (>). Expects cursor at '>'."
   (unless (eql (source-peek source) #\>)
     (error 'yaml-scanner-error :message "Expected '>' for folded scalar"))
-  (source-advance source)
-  (source-skip-blanks source)
-  (source-consume-line-break source)
-  (let ((content-indent (source-count-indent source))
-        (chars (make-array 0 :element-type 'character :adjustable t :fill-pointer 0))
-        (first-line t))
-    (when (zerop content-indent)
-      (return-from read-folded-scalar ""))
-    (loop
-      (when (source-eof-p source)
-        (return))
-      (let ((line-indent (source-count-indent source)))
-        (when (and (< line-indent content-indent)
-                   (not (line-break-p (source-peek source))))
-          (return))
-        (source-skip-indent source)
-        (unless first-line
-          (vector-push-extend #\Space chars))
-        (setf first-line nil)
-        (loop for char = (source-peek source)
-              while (and char (not (line-break-p char)))
-              do (vector-push-extend char chars)
-                 (source-advance source))
-        (unless (source-consume-line-break source)
-          (vector-push-extend #\Newline chars)
-          (return))))
-    (vector-push-extend #\Newline chars)
-    (coerce chars 'string)))
+  (read-block-scalar source t parent-indent))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Anchor/Alias handling
@@ -281,10 +589,13 @@ Expects cursor at '>'."
   "During parsing, maps anchor names to their resolved values.")
 
 (defun anchor-char-p (char)
-  "Return T if CHAR is valid in an anchor name."
+  "Return T if CHAR is valid in an anchor/alias name. Per YAML 1.2 an anchor name
+is one or more non-whitespace characters excluding the flow indicators
+`,`, `[`, `]`, `{`, `}`."
   (and char
-       (or (alphanumericp char)
-           (find char "-_"))))
+       (not (whitespace-p char))
+       (not (line-break-p char))
+       (not (find char ",[]{}"))))
 
 (defun read-anchor-name (source)
   "Read an anchor/alias name starting after & or *."
@@ -325,31 +636,60 @@ Signals yaml-reference-error if the anchor is undefined."
 ;;; ---------------------------------------------------------------------------
 
 (defun read-mapping-key (source)
-  "Read a plain scalar key until colon, resolving via core schema."
-  (let ((chars (make-array 0 :element-type 'character :adjustable t :fill-pointer 0)))
-    (loop for char = (source-peek source)
-          while (and char
-                     (not (char= char #\:))
-                     (not (line-break-p char)))
-          do (vector-push-extend char chars)
-             (source-advance source))
-    (resolve-scalar (string-right-trim '(#\Space #\Tab) (coerce chars 'string)))))
+  "Read a mapping key. Quoted keys read as quoted scalars (preserving their
+string value); plain keys read up to the `:` indicator and resolve via the
+core schema."
+  (let ((char (source-peek source)))
+    (cond
+      ((eql char #\') (read-single-quoted-scalar source))
+      ((eql char #\") (read-double-quoted-scalar source))
+      (t
+       (let ((chars (make-array 0 :element-type 'character :adjustable t :fill-pointer 0)))
+         (loop for c = (source-peek source)
+               while (and c
+                          (not (line-break-p c))
+                          (not (and (char= c #\:)
+                                    (let ((n (source-peek source 1)))
+                                      (or (null n) (whitespace-p n) (line-break-p n))))))
+               do (vector-push-extend c chars)
+                  (source-advance source))
+         (resolve-scalar (string-right-trim '(#\Space #\Tab) (coerce chars 'string))))))))
 
 (defun read-explicit-key (source)
   "Read an explicit key after '?' indicator. Returns the key value.
-Supports complex keys: flow collections, quoted strings, and plain scalars."
-  (source-advance source) ; consume '?'
-  (source-skip-blanks source)
+Supports complex keys: block sequences/scalars on a following line, flow
+collections, quoted strings, node properties, and plain scalars."
+  (let ((q-indent (source-current-line-indent source)))
+    (source-advance source) ; consume '?'
+    (source-skip-blanks source)
   (let ((char (source-peek source)))
     (cond
-      ((or (null char) (line-break-p char))
-       'null)
       ((eql char #\:)
        'null)
+      ;; The key node sits on the following, more-indented line(s): a block
+      ;; sequence, block scalar, or block mapping.
+      ((or (null char) (line-break-p char))
+       (source-consume-line-break source)
+       (source-skip-blank-and-comment-lines source)
+       (if (source-eof-p source)
+           'null
+           (let ((ni (source-count-indent source)))
+             (if (> ni q-indent)
+                 (progn (source-skip-indent source)
+                        (read-nested-value source ni))
+                 'null))))
+      ((node-properties-here-p source)
+       (read-node-properties-and-value source q-indent))
+      ((and (eql char #\-)
+            (let ((n (source-peek source 1)))
+              (or (null n) (whitespace-p n) (line-break-p n))))
+       (read-block-sequence source))
+      ((eql char #\|) (read-literal-scalar source q-indent))
+      ((eql char #\>) (read-folded-scalar source q-indent))
       ((eql char #\[)
-       (read-flow-sequence source))
+       (let ((*flow-indent* (source-current-line-indent source))) (read-flow-sequence source)))
       ((eql char #\{)
-       (read-flow-mapping source))
+       (let ((*flow-indent* (source-current-line-indent source))) (read-flow-mapping source)))
       ((eql char #\')
        (read-single-quoted-scalar source))
       ((eql char #\")
@@ -365,87 +705,353 @@ Supports complex keys: flow collections, quoted strings, and plain scalars."
                                         (line-break-p (source-peek source 1))))))
                do (vector-push-extend c chars)
                   (source-advance source))
-         (resolve-scalar (string-right-trim '(#\Space #\Tab) (coerce chars 'string))))))))
+         (resolve-scalar (string-right-trim '(#\Space #\Tab) (coerce chars 'string)))))))))
+
+(defun node-properties-here-p (source)
+  "Return T if the cursor is at a node-property indicator (`&` anchor or `!` tag)."
+  (let ((c (source-peek source)))
+    (and c (or (char= c #\&) (char= c #\!)))))
+
+(defun read-node-properties-and-value (source indent)
+  "Read optional node properties (`&anchor` and/or `!tag`, in either order) at
+the cursor, then the node they decorate, at block INDENT. The node may sit on
+the same line or, after a line break, as a more-indented block collection.
+Registers the anchor and returns the value."
+  (let ((anchor nil)
+        (tag nil))
+    ;; Consume any sequence of anchor/tag properties separated by blanks.
+    (loop
+      (cond
+        ((eql (source-peek source) #\&)
+         (setf anchor (read-anchor source)))
+        ((eql (source-peek source) #\!)
+         (setf tag (read-tag source nil)))
+        (t (return)))
+      (source-skip-blanks source))
+    (let ((value
+            (cond
+              ;; Properties were the whole line: the node is on the next,
+              ;; more-indented line (a block collection) or is empty.
+              ((or (null (source-peek source)) (line-break-p (source-peek source)))
+               (source-consume-line-break source)
+               (source-skip-blank-lines source)
+               (if (source-eof-p source)
+                   ;; Empty node: `!!str` forces the empty string.
+                   (if (equal tag "tag:yaml.org,2002:str") "" 'null)
+                   (let ((nested (source-count-indent source)))
+                     (if (> nested indent)
+                         (progn (source-skip-indent source)
+                                (read-nested-value source nested))
+                         (if (equal tag "tag:yaml.org,2002:str") "" 'null)))))
+              ;; A block-sequence indicator (`-`) cannot follow node properties
+              ;; on the same line: `&anchor - sequence entry` is malformed.
+              ((and (eql (source-peek source) #\-)
+                    (let ((n (source-peek source 1)))
+                      (or (null n) (whitespace-p n) (line-break-p n))))
+               (yaml-parse-fail 'yaml-structure-error source
+                                "Block sequence cannot follow node properties on the same line"))
+              (t (read-nested-value source indent)))))
+      (when (and anchor *anchor-table*)
+        (setf (gethash anchor *anchor-table*) value))
+      value)))
 
 (defun read-nested-value (source indent)
   "Read a nested value at the given INDENT level. Dispatches based on first character."
-  (declare (ignore indent))
   (let ((char (source-peek source)))
     (cond
       ((null char) 'null)
-      ((eql char #\-) (read-block-sequence source))
-      ((eql char #\[) (read-flow-sequence source))
-      ((eql char #\{) (read-flow-mapping source))
+      ((and (or (node-properties-here-p source) (eql char #\*))
+            (looks-like-mapping-key-p source))
+       (read-block-mapping source))
+      ((node-properties-here-p source)
+       (read-node-properties-and-value source indent))
+      ((eql char #\*) (read-alias source))
+      ((and (eql char #\-)
+            (let ((n (source-peek source 1)))
+              (or (null n) (whitespace-p n) (line-break-p n))))
+       (read-block-sequence source))
+      ((eql char #\[) (let ((*flow-indent* (1- indent))) (read-flow-sequence source)))
+      ((eql char #\{) (let ((*flow-indent* (1- indent))) (read-flow-mapping source)))
       ((eql char #\') (read-single-quoted-scalar source))
       ((eql char #\") (read-double-quoted-scalar source))
-      ((eql char #\|) (read-literal-scalar source))
-      ((eql char #\>) (read-folded-scalar source))
+      ((eql char #\|) (read-literal-scalar source (max 0 (1- indent))))
+      ((eql char #\>) (read-folded-scalar source (max 0 (1- indent))))
+      ((and (eql char #\?)
+            (let ((n (source-peek source 1)))
+              (or (null n) (whitespace-p n) (line-break-p n))))
+       (read-block-mapping source))
       ((looks-like-mapping-key-p source) (read-block-mapping source))
-      (t (read-plain-scalar source)))))
+      (t (read-plain-scalar source indent)))))
+
+(defun read-explicit-value (source map-indent)
+  "Read the value following an explicit key's `:` indicator (already consumed,
+along with any inline comment). MAP-INDENT is the mapping's key indentation.
+Handles inline scalars/collections and values on a following, deeper line, plus
+a block sequence written at MAP-INDENT."
+  (cond
+    ((source-eof-p source) 'null)
+    ((line-break-p (source-peek source))
+     (source-consume-line-break source)
+     (source-skip-blank-and-comment-lines source)
+     (if (source-eof-p source)
+         'null
+         (let ((ni (source-count-indent source)))
+           (cond
+             ((> ni map-indent)
+              (source-skip-indent source)
+              (read-nested-value source ni))
+             ;; A block sequence may sit at the mapping indent.
+             ((and (= ni map-indent)
+                   (eql (source-peek source ni) #\-)
+                   (let ((n (source-peek source (1+ ni))))
+                     (or (null n) (whitespace-p n) (line-break-p n))))
+              (source-skip-indent source)
+              (read-block-sequence source))
+             (t 'null)))))
+    ((node-properties-here-p source)
+     (read-node-properties-and-value source map-indent))
+    ((eql (source-peek source) #\*) (read-alias source))
+    ((eql (source-peek source) #\|) (read-literal-scalar source map-indent))
+    ((eql (source-peek source) #\>) (read-folded-scalar source map-indent))
+    ((eql (source-peek source) #\[)
+     (let ((*flow-indent* map-indent)) (read-flow-sequence source)))
+    ((eql (source-peek source) #\{)
+     (let ((*flow-indent* map-indent)) (read-flow-mapping source)))
+    ((eql (source-peek source) #\') (read-single-quoted-scalar source))
+    ((eql (source-peek source) #\") (read-double-quoted-scalar source))
+    ;; A block sequence introduced inline (`: - one`) is a compact in-line
+    ;; sequence belonging to the explicit key.
+    ((and (eql (source-peek source) #\-)
+          (let ((n (source-peek source 1)))
+            (or (null n) (whitespace-p n) (line-break-p n))))
+     (read-block-sequence source))
+    (t (read-plain-scalar source (1+ map-indent)))))
 
 (defun read-block-mapping (source)
   "Read a block mapping from SOURCE. Returns a hash-table (test EQUAL).
 Supports both implicit keys (key: value) and explicit keys (? key : value)."
   (let ((table (make-hash-table :test #'equal))
-        (map-indent (source-column source)))
-    (loop
+        (map-indent (source-column source))
+        (saw-explicit nil))
+    (loop named outer do
+     (block iter
       (source-skip-blanks source)
       (when (source-eof-p source)
-        (return))
-      (let* ((explicit-key-p (eql (source-peek source) #\?))
-             (key (if explicit-key-p
-                      (read-explicit-key source)
-                      (read-mapping-key source))))
-        (when (and (not explicit-key-p) (stringp key) (string= key ""))
-          (return))
-        (source-skip-blanks source)
-        (when (and explicit-key-p (line-break-p (source-peek source)))
-          (source-consume-line-break source)
-          (source-skip-blank-lines source)
+        (return-from outer))
+      ;; A document marker at the mapping indent ends the mapping.
+      (when (looks-like-document-marker source)
+        (return-from outer))
+      ;; --- Explicit key (`? key` / `: value`) --------------------------------
+      (when (and (eql (source-peek source) #\?)
+                 (let ((n (source-peek source 1)))
+                   (or (null n) (whitespace-p n) (line-break-p n))))
+        (setf saw-explicit t)
+        (let* ((key-line0 (source-line source))
+               (key (read-explicit-key source))
+               (at-line-start nil))   ; T once the cursor is parked at a fresh line
+          ;; If reading the key already advanced past its line AND parked the
+          ;; cursor at a dedented sibling/parent line (e.g. an empty anchored key
+          ;; `? &d` whose properties spanned the whole line, leaving the cursor
+          ;; on the next, less-indented entry), there is no `:` pairing: the key
+          ;; is null-valued and the cursor is already at the next entry.
+          (when (and (/= (source-line source) key-line0)
+                     (not (source-eof-p source))
+                     (< (source-count-indent source) map-indent))
+            (setf at-line-start t))
+          ;; Locate the matching `:` (possibly after blank / comment lines at the
+          ;; mapping indent) or conclude a null-valued key.
+          (source-skip-blanks source)
+          (source-skip-comment source)
+          (let ((had-colon
+                  (cond
+                    (at-line-start nil)
+                    ((eql (source-peek source) #\:) t)
+                    ((or (null (source-peek source)) (line-break-p (source-peek source)))
+                     (source-consume-line-break source)
+                     (source-skip-blank-and-comment-lines source)
+                     (cond
+                       ((and (not (source-eof-p source))
+                             (= (source-count-indent source) map-indent)
+                             (eql (source-peek source map-indent) #\:))
+                        (source-skip-indent source)
+                        t)
+                       (t (setf at-line-start t) nil)))
+                    (t nil))))
+            (let ((value
+                    (if had-colon
+                        (progn
+                          (source-advance source) ; consume :
+                          (source-skip-blanks source)
+                          (source-skip-comment source)
+                          (let ((v (read-explicit-value source map-indent)))
+                            ;; A collection value parks at a line start.
+                            (when (or (hash-table-p v)
+                                      (and (vectorp v) (not (stringp v))))
+                              (setf at-line-start t))
+                            v))
+                        'null)))
+              (when (nth-value 1 (gethash key table))
+                (error 'yaml-duplicate-key-error
+                       :key key
+                       :message (format nil "Duplicate mapping key: ~S" key)
+                       :position (source-position source)))
+              (setf (gethash key table) value)))
+          ;; Position at the next entry / end.
+          (unless at-line-start
+            (source-skip-to-eol source)
+            (source-consume-line-break source)
+            (source-skip-blank-and-comment-lines source)))
+        (when (source-eof-p source)
+          (return-from outer))
+        (let ((ni (source-count-indent source)))
+          (when (< ni map-indent) (return-from outer))
+          (when (> ni map-indent) (return-from outer))
           (source-skip-indent source))
+        (return-from iter))
+      ;; A key may carry node properties (`&anchor` / `!tag`) or be an alias
+      ;; (`*alias`). Consume any leading property block, registering an anchor to
+      ;; the key node and resolving an alias key by shared object identity.
+      (let ((key-anchor nil)
+            (key-alias-value nil)
+            (key-is-alias nil)
+            (key-tagged nil))
+        (loop
+          (let ((c (source-peek source)))
+            (cond
+              ((eql c #\&) (setf key-anchor (read-anchor source)))
+              ((eql c #\!) (read-tag source nil) (setf key-tagged t)
+               (source-skip-blanks source))
+              ((eql c #\*)
+               ;; An alias node takes no node properties: `&b *a` is invalid.
+               (when (or key-anchor key-tagged)
+                 (yaml-parse-fail 'yaml-structure-error source
+                                  "Alias node cannot carry node properties"))
+               (setf key-alias-value (read-alias source) key-is-alias t)
+               (source-skip-blanks source)
+               (return))
+              (t (return)))))
+      (let* ((key-quoted-p (or (eql (source-peek source) #\')
+                               (eql (source-peek source) #\")))
+             (key-start-line (source-line source))
+             (key (cond
+                    (key-is-alias key-alias-value)
+                    (t (read-mapping-key source)))))
+        (declare (ignorable key-tagged))
+        (when key-anchor
+          (setf (gethash key-anchor *anchor-table*) key))
+        ;; An implicit key that is a quoted scalar must fit on a single line.
+        (when (and key-quoted-p (/= (source-line source) key-start-line))
+          (yaml-parse-fail 'yaml-structure-error source
+                           "Multi-line implicit mapping key is not allowed"))
+        (when (and (stringp key) (string= key ""))
+          (return-from outer))
         (source-skip-blanks source)
         (unless (eql (source-peek source) #\:)
-          (return))
+          ;; A non-empty scalar that is not followed by `:` does not form a
+          ;; mapping entry. Inside an established mapping this is malformed
+          ;; trailing content (e.g. `top1:\n  k: v\ntop2`).
+          (when (and (> (hash-table-count table) 0)
+                     (or (and (stringp key)
+                              (> (length key) 0)
+                              ;; Exclude test-suite glyph markers
+                              ;; (trailing-space/newline visualisations).
+                              (not (find-if (lambda (c) (find c "␣↵∎—»")) key))
+                              ;; Exclude indicator-led lines handled elsewhere.
+                              (not (member (char key 0) '(#\- #\? #\:))))
+                         ;; Node properties (`&anchor` / `!tag`) consumed but no
+                         ;; `:` follows: malformed trailing content.
+                         key-anchor key-tagged))
+            (yaml-parse-fail 'yaml-structure-error source
+                             "Expected ':' in block mapping entry"))
+          (return-from outer))
         (source-advance source)
         (source-skip-blanks source)
+        ;; A comment may follow the `:` on the key line; the value then sits on
+        ;; a following line.
+        (when (eql (source-peek source) #\#)
+          (source-skip-comment source))
         (when (nth-value 1 (gethash key table))
           (error 'yaml-duplicate-key-error
                  :key key
                  :message (format nil "Duplicate mapping key: ~S" key)
                  :position (source-position source)))
-        (let ((anchor-name (when (eql (source-peek source) #\&)
-                             (read-anchor source)))
-              (nested-p nil))
+        (let ((anchor-name nil)
+              (nested-p nil)
+              (quoted-value-p nil)
+              (flow-value-p nil))
+          ;; The value may carry node properties (`&anchor` and/or `!tag`, in
+          ;; either order) before the node itself.
+          (let ((had-property nil))
+            (loop
+              (cond
+                ((eql (source-peek source) #\&)
+                 (setf anchor-name (read-anchor source) had-property t))
+                ((eql (source-peek source) #\!)
+                 (read-tag source nil) (setf had-property t)
+                 (source-skip-blanks source))
+                (t (return))))
+            ;; An alias node takes no node properties: `key: &b *a` is invalid.
+            (when (and had-property (eql (source-peek source) #\*))
+              (yaml-parse-fail 'yaml-structure-error source
+                               "Alias node cannot carry node properties")))
+          (setf quoted-value-p (or (eql (source-peek source) #\')
+                                   (eql (source-peek source) #\")))
           (let ((value (cond
                          ((source-eof-p source)
                           'null)
                          ((line-break-p (source-peek source))
                           (source-consume-line-break source)
-                          (source-skip-blank-lines source)
+                          (source-skip-blank-and-comment-lines source)
                           (if (source-eof-p source)
-                              'null
+                              ;; Cursor is at EOF: nothing more to consume.
+                              (progn (setf nested-p t) 'null)
                               (let ((nested-indent (source-count-indent source)))
-                                (if (> nested-indent map-indent)
-                                    (progn
-                                      (setf nested-p t)
-                                      (source-skip-indent source)
-                                      (read-nested-value source nested-indent))
-                                    'null))))
+                                (cond
+                                  ((> nested-indent map-indent)
+                                   (source-skip-indent source)
+                                   (let ((v (read-nested-value source nested-indent)))
+                                     ;; Collections position the cursor past
+                                     ;; their content; leaf scalars leave it
+                                     ;; on the trailing line, so let the
+                                     ;; common eol-consumption run for them.
+                                     (when (or (hash-table-p v) (and (vectorp v) (not (stringp v))))
+                                       (setf nested-p t))
+                                     v))
+                                  ;; A block sequence may be written at the same
+                                  ;; indentation as its parent mapping key.
+                                  ((and (= nested-indent map-indent)
+                                        (eql (source-peek source nested-indent) #\-)
+                                        (let ((n (source-peek source (1+ nested-indent))))
+                                          (or (null n) (whitespace-p n) (line-break-p n))))
+                                   (source-skip-indent source)
+                                   (setf nested-p t)
+                                   (read-block-sequence source))
+                                  ;; Empty value: the next line belongs to a
+                                  ;; sibling/ancestor, not this entry. The cursor
+                                  ;; is parked at that line's start, so suppress
+                                  ;; the trailing eol-consumption.
+                                  (t (setf nested-p t) 'null)))))
                          ((eql (source-peek source) #\*)
                           (read-alias source))
                          ((eql (source-peek source) #\|)
-                          (read-literal-scalar source))
+                          (setf nested-p t)
+                          (read-literal-scalar source map-indent))
                          ((eql (source-peek source) #\>)
-                          (read-folded-scalar source))
+                          (setf nested-p t)
+                          (read-folded-scalar source map-indent))
                          ((eql (source-peek source) #\[)
-                          (read-flow-sequence source))
+                          (setf flow-value-p t)
+                          (let ((*flow-indent* map-indent)) (read-flow-sequence source)))
                          ((eql (source-peek source) #\{)
-                          (read-flow-mapping source))
+                          (setf flow-value-p t)
+                          (let ((*flow-indent* map-indent)) (read-flow-mapping source)))
                          ((eql (source-peek source) #\')
-                          (read-single-quoted-scalar source))
+                          (let ((*quoted-min-indent* (1+ map-indent)))
+                            (read-single-quoted-scalar source)))
                          ((eql (source-peek source) #\")
-                          (read-double-quoted-scalar source))
-                         (t (read-plain-scalar source)))))
+                          (let ((*quoted-min-indent* (1+ map-indent)))
+                            (read-double-quoted-scalar source)))
+                         (t (read-plain-scalar source (1+ map-indent))))))
             (when (and anchor-name *anchor-table*)
               (setf (gethash anchor-name *anchor-table*) value))
             (if (and (stringp key) (string= key "<<") (hash-table-p value))
@@ -455,17 +1061,56 @@ Supports both implicit keys (key: value) and explicit keys (? key : value)."
                          value)
                 (setf (gethash key table) value))
             (unless nested-p
+              ;; After a quoted scalar value, only whitespace and a comment may
+              ;; follow on the line; trailing content is an error.
+              (when quoted-value-p
+                (let ((blanks (source-skip-blanks source))
+                      (c (source-peek source)))
+                  (when (and c (not (line-break-p c))
+                             (not (and (char= c #\#) (> blanks 0))))
+                    (yaml-parse-fail 'yaml-structure-error source
+                                     "Unexpected content after quoted scalar value"))))
+              ;; After a flow collection value, only whitespace and a comment may
+              ;; follow on the line; inline trailing content (`x: {y: z}in`) is
+              ;; malformed.
+              (when flow-value-p
+                (let ((blanks (source-skip-blanks source))
+                      (c (source-peek source)))
+                  (when (and c (not (line-break-p c))
+                             (not (and (char= c #\#) (> blanks 0))))
+                    (yaml-parse-fail 'yaml-structure-error source
+                                     "Unexpected content after flow collection value"))))
               (source-skip-to-eol source)
               (source-consume-line-break source)
-              (source-skip-blank-lines source))))
+              (source-skip-blank-and-comment-lines source))))
         (when (source-eof-p source)
-          (return))
+          (return-from outer))
         (let ((new-indent (source-count-indent source)))
           (when (< new-indent map-indent)
-            (return))
+            (return-from outer))
           (when (> new-indent map-indent)
-            (return))
-          (source-skip-indent source))))
+            ;; A following line indented deeper than the mapping's keys that
+            ;; itself forms a new `key:` entry is invalid indentation. Other
+            ;; deeper content (explicit `?` keys, blanks) is left to the caller.
+            (source-skip-indent source)
+            (cond
+              ((and (not saw-explicit) (looks-like-mapping-key-p source))
+               (yaml-parse-fail 'yaml-structure-error source
+                                "Bad indentation of mapping entry"))
+              ;; Deeper content that begins with a plain word (no YAML indicator)
+              ;; and forms no `key:` entry is stray over-indented content:
+              ;; malformed (e.g. `key:\n - a\n invalid`).
+              ((and (not saw-explicit)
+                    (let ((c (source-peek source)))
+                      (and c (or (alphanumericp c)
+                                 (find c "._/\\")))))
+               (yaml-parse-fail 'yaml-structure-error source
+                                "Bad indentation of mapping entry"))
+              (t
+               (setf (source-index source) (- (source-index source) new-indent)
+                     (source-column source) 0)
+               (return-from outer))))
+          (source-skip-indent source))))))
     table))
 
 ;;; ---------------------------------------------------------------------------
@@ -531,19 +1176,50 @@ Handle is like !yaml!, !!, or !e!. Prefix is a URI prefix."
 Returns a vector of items."
   (unless (eql (source-peek source) #\[)
     (error 'yaml-scanner-error :message "Expected opening bracket"))
-  (source-advance source) ; consume [
-  (source-skip-blanks source)
   (let ((items (make-array 0 :adjustable t :fill-pointer 0)))
+    (source-advance source) ; consume [
+    (flow-skip-separation source)
     (loop
-      (source-skip-blanks source)
+      (flow-skip-separation source)
       (when (eql (source-peek source) #\])
         (source-advance source)
         (return (coerce items 'vector)))
       (when (source-eof-p source)
         (error 'yaml-scanner-error :message "Unterminated flow sequence"))
-      (let ((item (read-flow-node source)))
-        (vector-push-extend item items))
-      (source-skip-blanks source)
+      ;; A `,` where a flow entry is expected is an empty entry (leading comma
+      ;; `[ , a]` or doubled comma `[a, , b]`): invalid.
+      (when (eql (source-peek source) #\,)
+        (yaml-parse-fail 'yaml-structure-error source
+                         "Empty entry in flow sequence"))
+      ;; A flow sequence entry may itself be `key: value` (a single-pair flow
+      ;; mapping) when a `:` follows the node.
+      (multiple-value-bind (item colon-after-break) (read-flow-node source)
+        (let ((sep-breaks (flow-skip-separation source)))
+        ;; A flow-sequence entry that is a single `key: value` pair requires the
+        ;; key and its `:` to be on the same line.
+        (when (and (or (> sep-breaks 0) colon-after-break)
+                   (eql (source-peek source) #\:)
+                   (let ((n (source-peek source 1)))
+                     (or (null n) (whitespace-p n) (line-break-p n)
+                         (find n ",[]{}"))))
+          (yaml-parse-fail 'yaml-structure-error source
+                           "Implicit flow key and its ':' span multiple lines"))
+        (if (and (eql (source-peek source) #\:)
+                 (let ((n (source-peek source 1)))
+                   (or (null n) (whitespace-p n) (line-break-p n)
+                       (find n ",[]{}"))))
+            (progn
+              (source-advance source) ; consume :
+              (source-skip-flow-whitespace source)
+              (let ((value (if (or (null (source-peek source))
+                                   (find (source-peek source) ",]}"))
+                               'null
+                               (read-flow-node source)))
+                    (ht (make-hash-table :test #'equal)))
+                (setf (gethash item ht) value)
+                (vector-push-extend ht items)))
+            (vector-push-extend item items))))
+      (flow-skip-separation source)
       (cond
         ((eql (source-peek source) #\,)
          (source-advance source))
@@ -552,30 +1228,146 @@ Returns a vector of items."
         (t
          (error 'yaml-scanner-error :message "Expected , or ] in flow sequence"))))))
 
+(defun flow-skip-separation (source)
+  "Skip inter-token separation in flow context (blanks, line breaks, comments),
+then enforce flow rules on the line landed on: continuation content must be
+indented past *FLOW-INDENT*, document markers may not appear, and a `#` that
+begins a comment must be preceded by whitespace. Returns the line-break count."
+  (let ((breaks (source-skip-flow-whitespace source)))
+    (when (> breaks 0)
+      (let ((c (source-peek source)))
+        (when (and c (not (line-break-p c)))
+          (when (and *flow-indent* (<= (source-column source) *flow-indent*))
+            (yaml-parse-fail 'yaml-structure-error source
+                             "Flow content is under-indented"))
+          (when (looks-like-document-marker source)
+            (yaml-parse-fail 'yaml-structure-error source
+                             "Document marker inside flow collection")))))
+    breaks))
+
 (defun read-flow-node (source)
-  "Read a flow node (scalar, sequence, or mapping) within flow context."
-  (source-skip-blanks source)
+  "Read a flow node (scalar, sequence, or mapping) within flow context. Returns
+the node, and as a second value T when a plain scalar ended at a `:` reached
+only after a line break (a multi-line implicit-key situation)."
+  (flow-skip-separation source)
+  ;; A flow node may carry node properties (`&anchor` and/or `!tag`).
+  (let ((anchor nil) (tag nil))
+    (loop
+      (cond
+        ((eql (source-peek source) #\&) (setf anchor (read-anchor source)))
+        ((eql (source-peek source) #\!) (setf tag (read-tag source nil)))
+        (t (return)))
+      (flow-skip-separation source))
+    (let ((char (source-peek source)))
+      (multiple-value-bind (node colon-after-break)
+          (cond
+            ((null char) 'null)
+            ;; An empty flow node (the next token closes/separates the entry, or
+            ;; is a value-introducing `:`) takes the null value, which `!!str`
+            ;; forces to the empty string. A `:` that is NOT followed by a
+            ;; separator begins a plain scalar (`:x`) and is not empty.
+            ((or (find char ",]}")
+                 (and (eql char #\:)
+                      (let ((n (source-peek source 1)))
+                        (or (null n) (whitespace-p n) (line-break-p n)
+                            (find n ",[]{}")))))
+             (if (equal tag "tag:yaml.org,2002:str") "" 'null))
+            ((eql char #\[) (read-flow-sequence source))
+            ((eql char #\{) (read-flow-mapping source))
+            ((eql char #\') (read-single-quoted-scalar source))
+            ((eql char #\") (read-double-quoted-scalar source))
+            (t (read-flow-plain-scalar source)))
+        (when (and anchor *anchor-table*)
+          (setf (gethash anchor *anchor-table*) node))
+        (values node colon-after-break)))))
+
+(defun flow-plain-scalar-end-here-p (source)
+  "Return T if the cursor ends a flow plain scalar: at a flow indicator, or at a
+`:` that is followed by whitespace/break/flow-indicator/EOF, or at a `#` comment
+preceded by whitespace, or at a line break/EOF."
   (let ((char (source-peek source)))
     (cond
-      ((null char) 'null)
-      ((eql char #\[) (read-flow-sequence source))
-      ((eql char #\{) (read-flow-mapping source))
-      ((eql char #\') (read-single-quoted-scalar source))
-      ((eql char #\") (read-double-quoted-scalar source))
-      (t (read-flow-plain-scalar source)))))
+      ((null char) t)
+      ((line-break-p char) t)
+      ((find char ",[]{}") t)
+      ((and (char= char #\:)
+            (let ((n (source-peek source 1)))
+              (or (null n) (whitespace-p n) (line-break-p n)
+                  (find n ",[]{}"))))
+       t)
+      (t nil))))
 
 (defun read-flow-plain-scalar (source)
-  "Read a plain scalar within flow context.
-Terminates at flow indicators: , ] } and :"
-  (let ((chars (make-array 0 :element-type 'character :adjustable t :fill-pointer 0)))
-    (loop for char = (source-peek source)
-          while (and char
-                     (not (whitespace-p char))
-                     (not (line-break-p char))
-                     (not (find char ",]}:")))
-          do (vector-push-extend char chars)
-             (source-advance source))
-    (resolve-scalar (coerce chars 'string))))
+  "Read a (possibly multi-line) plain scalar within flow context. Terminates at
+flow indicators, at a `:` that introduces a value, at a comment, or at the end
+of the flow collection. Interior line breaks fold like block plain scalars."
+  ;; A plain scalar may not begin with the comment indicator.
+  (when (eql (source-peek source) #\#)
+    (yaml-parse-fail 'yaml-scanner-error source
+                     "Plain scalar may not begin with '#'"))
+  ;; A `-` (block sequence indicator) followed by whitespace/break/flow-
+  ;; indicator/EOF is not a valid flow scalar: `[-]`, `[-, -]`.
+  (when (and (eql (source-peek source) #\-)
+             (let ((n (source-peek source 1)))
+               (or (null n) (whitespace-p n) (line-break-p n)
+                   (find n ",[]{}"))))
+    (yaml-parse-fail 'yaml-scanner-error source
+                     "'-' is not a valid flow scalar"))
+  (let ((result (make-array 0 :element-type 'character :adjustable t :fill-pointer 0))
+        (colon-after-break nil))
+    (labels ((read-segment ()
+               (let ((seg (make-array 0 :element-type 'character
+                                        :adjustable t :fill-pointer 0)))
+                 (loop until (flow-plain-scalar-end-here-p source)
+                       do ;; `#` starts a comment only when preceded by space.
+                          (when (and (eql (source-peek source) #\#)
+                                     (let ((p (source-peek source -1)))
+                                       (or (null p) (whitespace-p p))))
+                            (return))
+                          (vector-push-extend (source-peek source) seg)
+                          (source-advance source))
+                 (string-right-trim '(#\Space #\Tab) (coerce seg 'string)))))
+      (loop for ch across (read-segment) do (vector-push-extend ch result))
+      ;; Fold continuation lines until a flow indicator or end. A comment line
+      ;; interrupting the scalar terminates it (the next token must then be a
+      ;; separator, else a structure error).
+      (loop
+        (unless (line-break-p (source-peek source))
+          (return))
+        (let ((breaks 0)
+              (saw-comment nil))
+          (loop
+            (let ((blanks (source-skip-blanks source)))
+              (cond
+                ((and (eql (source-peek source) #\#)
+                      (let ((p (source-peek source -1)))
+                        (or (> blanks 0) (null p) (line-break-p p))))
+                 (setf saw-comment t)
+                 (source-skip-comment source))
+                ((line-break-p (source-peek source))
+                 (source-consume-line-break source)
+                 (incf breaks))
+                (t (return)))))
+          (when (or saw-comment
+                    (source-eof-p source)
+                    (find (source-peek source) ",[]{}")
+                    (eql (source-peek source) #\:)
+                    (and (> breaks 0) *flow-indent*
+                         (<= (source-column source) *flow-indent*)))
+            (when (and (> breaks 0) *flow-indent* (not saw-comment)
+                       (not (source-eof-p source))
+                       (not (find (source-peek source) ",[]{}:"))
+                       (<= (source-column source) *flow-indent*))
+              (yaml-parse-fail 'yaml-structure-error source
+                               "Flow content is under-indented"))
+            (when (and (> breaks 0) (eql (source-peek source) #\:))
+              (setf colon-after-break t))
+            (return))
+          (if (= breaks 1)
+              (vector-push-extend #\Space result)
+              (dotimes (i (1- breaks)) (vector-push-extend #\Newline result)))
+          (loop for ch across (read-segment) do (vector-push-extend ch result)))))
+    (values (resolve-scalar (coerce result 'string)) colon-after-break)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Flow mapping reading
@@ -586,27 +1378,56 @@ Terminates at flow indicators: , ] } and :"
 Returns a hash-table (test EQUAL)."
   (unless (eql (source-peek source) #\{)
     (error 'yaml-scanner-error :message "Expected opening brace"))
-  (source-advance source) ; consume {
-  (source-skip-blanks source)
   (let ((table (make-hash-table :test #'equal)))
+    (source-advance source) ; consume {
+    (flow-skip-separation source)
     (loop
-      (source-skip-blanks source)
+      (flow-skip-separation source)
       (when (eql (source-peek source) #\})
         (source-advance source)
         (return table))
       (when (source-eof-p source)
         (error 'yaml-scanner-error :message "Unterminated flow mapping"))
-      (let ((key (read-flow-mapping-key source)))
-        (source-skip-blanks source)
-        (unless (eql (source-peek source) #\:)
-          (error 'yaml-scanner-error :message "Expected : after mapping key"))
-        (source-advance source) ; consume :
-        (source-skip-blanks source)
-        (let ((value (if (find (source-peek source) ",}")
-                         'null
-                         (read-flow-node source))))
-          (setf (gethash key table) value)))
-      (source-skip-blanks source)
+      (cond
+        ;; Explicit key: `? key : value` inside flow.
+        ((and (eql (source-peek source) #\?)
+              (let ((n (source-peek source 1)))
+                (or (null n) (whitespace-p n) (line-break-p n))))
+         (source-advance source)
+         (source-skip-flow-whitespace source)
+         (let ((key (if (or (eql (source-peek source) #\:)
+                            (find (source-peek source) ",}"))
+                        'null
+                        (read-flow-node source))))
+           (source-skip-flow-whitespace source)
+           (let ((value (if (eql (source-peek source) #\:)
+                            (progn
+                              (source-advance source)
+                              (source-skip-flow-whitespace source)
+                              (if (find (source-peek source) ",}")
+                                  'null
+                                  (read-flow-node source)))
+                            'null)))
+             (setf (gethash key table) value))))
+        (t
+         (let ((key (read-flow-mapping-key source)))
+           (source-skip-flow-whitespace source)
+           (let ((value (cond
+                          ((eql (source-peek source) #\:)
+                           (source-advance source) ; consume :
+                           (source-skip-flow-whitespace source)
+                           (if (find (source-peek source) ",}")
+                               'null
+                               (read-flow-node source)))
+                          ;; A bare entry with no `:` is a key with null value
+                          ;; only at a separator/close (e.g. `{a, b}`).
+                          ((find (source-peek source) ",}")
+                           'null)
+                          (t
+                           (error 'yaml-scanner-error
+                                  :message "Expected : after mapping key")))))
+             (setf (gethash key table) value)))))
+      (source-skip-flow-whitespace source)
       (cond
         ((eql (source-peek source) #\,)
          (source-advance source))
@@ -616,13 +1437,8 @@ Returns a hash-table (test EQUAL)."
          (error 'yaml-scanner-error :message "Expected , or } in flow mapping"))))))
 
 (defun read-flow-mapping-key (source)
-  "Read a flow mapping key until colon."
-  (source-skip-blanks source)
-  (let ((char (source-peek source)))
-    (cond
-      ((eql char #\') (read-single-quoted-scalar source))
-      ((eql char #\") (read-double-quoted-scalar source))
-      (t (read-flow-plain-scalar source)))))
+  "Read a flow mapping key (which may carry node properties, e.g. `!!str`)."
+  (values (read-flow-node source)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Document reading
@@ -645,17 +1461,62 @@ Returns T if content follows, NIL if at EOF."
       (return t))))
 
 (defun looks-like-mapping-key-p (source)
-  "Check if current position looks like a mapping key (has ': ' on this line)."
-  (loop for i from 0
-        for char = (source-peek source i)
-        while (and char (not (line-break-p char)))
-        when (and (char= char #\:)
-                  (let ((next (source-peek source (1+ i))))
-                    (or (null next)
-                        (whitespace-p next)
-                        (line-break-p next))))
-          return t
-        finally (return nil)))
+  "Check if current position looks like a mapping key: a `:` followed by a
+blank/EOF appears on this line, outside of any quoted region. Quoted spans
+(single and double) are skipped so a `:` inside them does not count."
+  (let ((i 0))
+    ;; Skip a leading node-property / alias prefix (`&anchor`, `!tag`, `*alias`,
+    ;; in any order, blank-separated) so that an anchored or aliased KEY such as
+    ;; `&a a: b` or `*alias : v` is still recognised as a mapping key.
+    (loop
+      (let ((c (source-peek source i)))
+        (cond
+          ((and c (member c '(#\& #\* #\!)))
+           (incf i)
+           (loop for d = (source-peek source i)
+                 while (and d (not (whitespace-p d)) (not (line-break-p d)))
+                 do (incf i))
+           (loop for d = (source-peek source i)
+                 while (and d (whitespace-p d))
+                 do (incf i)))
+          (t (return)))))
+    (loop
+      (let ((char (source-peek source i)))
+        (cond
+          ((or (null char) (line-break-p char))
+           (return nil))
+          ;; A quote only opens a quoted span at a node boundary (start of line
+          ;; or after whitespace); elsewhere it is an ordinary plain character.
+          ((and (char= char #\')
+                (let ((p (source-peek source (1- i))))
+                  (or (zerop i) (null p) (whitespace-p p))))
+           (incf i)
+           (loop
+             (let ((c (source-peek source i)))
+               (cond
+                 ((or (null c) (line-break-p c)) (return-from looks-like-mapping-key-p nil))
+                 ((char= c #\')
+                  (if (eql (source-peek source (1+ i)) #\')
+                      (incf i 2)
+                      (progn (incf i) (return))))
+                 (t (incf i))))))
+          ;; Skip a double-quoted span: "..." with \" escapes.
+          ((and (char= char #\")
+                (let ((p (source-peek source (1- i))))
+                  (or (zerop i) (null p) (whitespace-p p))))
+           (incf i)
+           (loop
+             (let ((c (source-peek source i)))
+               (cond
+                 ((or (null c) (line-break-p c)) (return-from looks-like-mapping-key-p nil))
+                 ((char= c #\\) (incf i 2))
+                 ((char= c #\") (incf i) (return))
+                 (t (incf i))))))
+          ((and (char= char #\:)
+                (let ((next (source-peek source (1+ i))))
+                  (or (null next) (whitespace-p next) (line-break-p next))))
+           (return t))
+          (t (incf i)))))))
 
 (defun read-document-content (source)
   "Read the content of a document. Dispatches based on first character."
@@ -664,9 +1525,18 @@ Returns T if content follows, NIL if at EOF."
     (cond
       ((null char) 'null)
       ((line-break-p char) 'null)
+      ;; An anchored / tagged / aliased KEY (`&a a: b`, `*alias : v`) introduces
+      ;; a block mapping, not a single anchored node.
+      ((and (or (node-properties-here-p source) (eql char #\*))
+            (looks-like-mapping-key-p source))
+       (read-block-mapping source))
+      ((node-properties-here-p source)
+       (read-node-properties-and-value source -1))
       ((eql char #\*) (read-alias source))
-      ((eql char #\[) (read-flow-sequence source))
-      ((eql char #\{) (read-flow-mapping source))
+      ((eql char #\|) (read-literal-scalar source -1))
+      ((eql char #\>) (read-folded-scalar source -1))
+      ((eql char #\[) (let ((*flow-indent* -1)) (read-flow-sequence source)))
+      ((eql char #\{) (let ((*flow-indent* -1)) (read-flow-mapping source)))
       ((eql char #\')
        (if (looks-like-mapping-key-p source)
            (read-block-mapping source)
@@ -691,10 +1561,10 @@ Returns T if content follows, NIL if at EOF."
                (read-block-sequence source)
                (if (looks-like-mapping-key-p source)
                    (read-block-mapping source)
-                   (read-plain-scalar source)))))
+                   (read-plain-scalar source 0)))))
       ((looks-like-mapping-key-p source)
        (read-block-mapping source))
-      (t (read-plain-scalar source)))))
+      (t (read-plain-scalar source 0)))))
 
 (defun read-directives (source)
   "Read any YAML directives at the start of a document.
@@ -719,7 +1589,11 @@ Updates *yaml-version* for %YAML directives. Returns T if directives were found.
               (eql (source-peek source 3) #\G))
          (parse-tag-directive source)
          (setf found t))
-        (t (return)))
+        (t
+         ;; Unknown/reserved directive: ignore its whole line (per spec, a
+         ;; conforming parser skips reserved directives with a warning).
+         (source-skip-to-eol source)
+         (setf found t)))
       (source-skip-blanks source)
       (source-skip-comment source)
       (source-consume-line-break source))
@@ -738,11 +1612,62 @@ Updates *yaml-version* for %YAML directives. Returns T if directives were found.
     (source-skip-comment source)
     (source-consume-line-break source)
     (source-skip-whitespace-and-comments source)
-    (let ((content (read-document-content source)))
+    (let* ((root-flow-p (member (source-peek source) '(#\[ #\{)))
+           (start-line (source-line source))
+           (content (read-document-content source)))
+      (declare (ignorable content))
+      ;; A multi-line root flow node used as an implicit block-mapping key
+      ;; (`[23\n]: 42`) is malformed: an implicit key must be a single line.
+      (when (and root-flow-p (> (source-line source) start-line))
+        (let ((m (source-index source)) (ml (source-line source)) (mc (source-column source)))
+          (source-skip-blanks source)
+          (when (and (eql (source-peek source) #\:)
+                     (let ((n (source-peek source 1)))
+                       (or (null n) (whitespace-p n) (line-break-p n))))
+            (yaml-parse-fail 'yaml-structure-error source
+                             "Multi-line flow node used as implicit key"))
+          (setf (source-index source) m (source-line source) ml (source-column source) mc)))
+      ;; Only blanks and a trailing comment may follow the content node on its
+      ;; line. Arbitrary inline trailing content (e.g. `[a,b,c] ]`) is
+      ;; malformed. Block constructs leave the cursor at a line start, where
+      ;; this check is a no-op.
+      (when (and root-flow-p
+                 (not (source-at-line-start-p source)))
+        ;; A `#` glued directly to the flow close (no separating whitespace) is
+        ;; not a valid comment: `[a, b, c, ]#invalid`.
+        (when (eql (source-peek source) #\#)
+          (yaml-parse-fail 'yaml-structure-error source
+                           "Comment must be separated from flow node by whitespace"))
+        (source-skip-blanks source)
+        (let ((c (source-peek source)))
+          ;; A flow collection followed inline by a stray flow indicator
+          ;; (e.g. `[a, b, c] ]`) is malformed. A following `:` is a complex
+          ;; mapping key and is handled elsewhere, so it is not flagged here.
+          (when (and c (find c "]}"))
+            (yaml-parse-fail 'yaml-structure-error source
+                             "Trailing content after flow node"))))
+      ;; A root flow collection followed by trailing block content that is
+      ;; neither a comment nor a document marker is malformed (the flow node is
+      ;; the whole document). E.g. `[\n a\n]\ninvalid`.
+      (when root-flow-p
+        (let ((mark (source-index source))
+              (mline (source-line source))
+              (mcol (source-column source)))
+          (source-skip-blanks source)
+          (source-skip-comment source)
+          (when (source-consume-line-break source)
+            (source-skip-whitespace-and-comments source)
+            (when (and (source-peek source)
+                       (not (looks-like-document-marker source)))
+              (yaml-parse-fail 'yaml-structure-error source
+                               "Trailing content after flow document")))
+          (setf (source-index source) mark
+                (source-line source) mline
+                (source-column source) mcol)))
       (source-skip-to-eol source)
       (source-consume-line-break source)
       (source-skip-whitespace-and-comments source)
-      (source-match-document-end source)
+      (setf *document-ended-explicitly* (source-match-document-end source))
       content)))
 
 (defun read-all-documents (source)

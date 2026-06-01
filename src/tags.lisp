@@ -62,13 +62,17 @@ Handles: !!type, !handle!suffix, !local, !<verbatim>."
       ((eql (source-peek source) #\!)
        (vector-push-extend (source-advance source) handle)
        (loop for char = (source-peek source)
-             while (and char (not (whitespace-p char)) (not (line-break-p char)))
+             while (and char (not (whitespace-p char)) (not (line-break-p char))
+                        ;; Flow indicators terminate a tag and are never part of
+                        ;; a shorthand suffix.
+                        (not (find char ",[]{}")))
              do (vector-push-extend char suffix)
                 (source-advance source))
        (expand-tag-shorthand (coerce handle 'string) (coerce suffix 'string) tag-handles))
       (t
        (loop for char = (source-peek source)
              while (and char (not (whitespace-p char)) (not (line-break-p char))
+                        (not (find char ",[]{}"))
                         (not (char= char #\!)))
              do (if (char= char #\!)
                     (progn

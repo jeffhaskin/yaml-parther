@@ -136,7 +136,11 @@ This is a minimal JSON parser for conformance comparison."
                          do (consume)))
                  (let ((num-str (subseq json-str start pos)))
                    (if (find #\. num-str)
-                       (read-from-string num-str)
+                       ;; The parser produces double-floats per the fixed
+                       ;; representation (resolve.lisp), so read expected JSON
+                       ;; numbers as double-floats too for a faithful EQUAL.
+                       (let ((*read-default-float-format* 'double-float))
+                         (read-from-string num-str))
                        (parse-integer num-str))))))
       (handler-case (parse-value)
         (error () nil)))))
