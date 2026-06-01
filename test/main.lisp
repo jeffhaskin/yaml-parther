@@ -15,10 +15,13 @@
   :parent yaml-parther
   (true t "Parachute harness loads and runs."))
 
-(define-test stubs-signal-loudly
+(define-test emit-works
   :parent yaml-parther
-  :description "Unimplemented verbs signal (no silent fallback)."
-  (fail (yaml:emit 42) 'error))
+  :description "Emit produces YAML output."
+  (is string= "42
+" (yaml:emit 42) "Emit integer")
+  (is string= "hello
+" (yaml:emit "hello") "Emit string"))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Scalar resolution tests (core schema)
@@ -275,6 +278,25 @@ b: *ref")))
   :parent anchors
   (fail (yaml:parse "a: *undefined") 'yaml-parther:yaml-reference-error
       "Undefined alias signals error"))
+
+;;; ---------------------------------------------------------------------------
+;;; Merge key tests
+;;; ---------------------------------------------------------------------------
+
+(define-test merge-keys
+  :parent yaml-parther
+  :description "Merge key (<<) support.")
+
+(define-test simple-merge
+  :parent merge-keys
+  (let ((result (yaml:parse "defaults: &d
+  a: 1
+actual:
+  <<: *d
+  b: 2")))
+    (let ((actual (gethash "actual" result)))
+      (is equal 1 (gethash "a" actual) "Merged key a")
+      (is equal 2 (gethash "b" actual) "Local key b"))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Flow collection tests

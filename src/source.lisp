@@ -169,10 +169,12 @@ Returns the number of characters skipped."
   "Skip any blank lines (lines containing only whitespace).
 Returns the number of line breaks consumed."
   (loop for count from 0
-        do (let ((start-index (source-index source)))
+        do (let ((start-index (source-index source))
+                 (start-column (source-column source)))
              (source-skip-blanks source)
              (unless (source-consume-line-break source)
-               (setf (source-index source) start-index)
+               (setf (source-index source) start-index
+                     (source-column source) start-column)
                (return count)))))
 
 ;;; ---------------------------------------------------------------------------

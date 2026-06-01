@@ -38,8 +38,10 @@ Lisp values (one per document)."
 (defun emit (value &key stream)
   "Emit native Lisp VALUE as YAML. When STREAM is NIL, return a fresh string;
 otherwise write to STREAM and return VALUE."
-  (declare (ignore value stream))
-  (error "EMIT is not yet implemented."))
+  (if stream
+      (progn (emit-document value stream) value)
+      (with-output-to-string (s)
+        (emit-document value s))))
 
 (defun emit-to-string (value)
   "Emit native Lisp VALUE as a YAML string."

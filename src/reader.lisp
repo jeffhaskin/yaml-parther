@@ -124,6 +124,22 @@ Collects characters until end of content (whitespace, newline, EOF, or indicator
     (resolve-scalar (coerce chars 'string))))
 
 ;;; ---------------------------------------------------------------------------
+;;; Tagged value reading
+;;; ---------------------------------------------------------------------------
+
+(defun read-tagged-value (source)
+  "Read a value after a tag has been consumed. Tags are currently ignored."
+  (let ((char (source-peek source)))
+    (cond
+      ((null char) 'null)
+      ((line-break-p char) 'null)
+      ((eql char #\[) (read-flow-sequence source))
+      ((eql char #\{) (read-flow-mapping source))
+      ((eql char #\') (read-single-quoted-scalar source))
+      ((eql char #\") (read-double-quoted-scalar source))
+      (t (read-plain-scalar source)))))
+
+;;; ---------------------------------------------------------------------------
 ;;; Block sequence reading
 ;;; ---------------------------------------------------------------------------
 
@@ -139,16 +155,47 @@ Returns a vector of items."
                        (line-break-p (source-peek source 1))
                        (null (source-peek source 1))))
         (return))
-      (source-advance source)
-      (source-skip-blanks source)
-      (let ((item (if (or (source-eof-p source)
-                          (line-break-p (source-peek source)))
-                      'null
-                      (read-plain-scalar source))))
-        (vector-push-extend item items))
-      (source-skip-to-eol source)
-      (source-consume-line-break source)
-      (source-skip-blank-lines source)
+      (let ((dash-col (source-column source))
+            (consumed-newline-p nil))
+        (source-advance source)
+        (source-skip-blanks source)
+        (let ((item (cond
+                      ((source-eof-p source)
+                       'null)
+                      ((line-break-p (source-peek source))
+                       (setf consumed-newline-p t)
+                       (source-consume-line-break source)
+                       (source-skip-blank-lines source)
+                       (if (source-eof-p source)
+                           'null
+                           (let ((nested-indent (source-count-indent source)))
+                             (if (> nested-indent dash-col)
+                                 (progn
+                                   (source-skip-indent source)
+                                   (read-nested-value source nested-indent))
+                                 'null))))
+                      ((eql (source-peek source) #\!)
+                       (read-tag source nil)
+                       (source-skip-blanks source)
+                       (read-tagged-value source))
+                      ((eql (source-peek source) #\[)
+                       (read-flow-sequence source))
+                      ((eql (source-peek source) #\{)
+                       (read-flow-mapping source))
+                      ((eql (source-peek source) #\')
+                       (read-single-quoted-scalar source))
+                      ((eql (source-peek source) #\")
+                       (read-double-quoted-scalar source))
+                      ((looks-like-mapping-key-p source)
+                       (read-block-mapping source))
+                      (t (read-plain-scalar source)))))
+          (vector-push-extend item items)
+          (unless consumed-newline-p
+            (source-skip-to-eol source)
+            (source-consume-line-break source)
+            (source-skip-blank-lines source))))
+      (when (source-eof-p source)
+        (return))
       (let ((new-indent (source-count-indent source)))
         (when (< new-indent seq-indent)
           (return))
@@ -620,8 +667,14 @@ Returns T if content follows, NIL if at EOF."
       ((eql char #\*) (read-alias source))
       ((eql char #\[) (read-flow-sequence source))
       ((eql char #\{) (read-flow-mapping source))
-      ((eql char #\') (read-single-quoted-scalar source))
-      ((eql char #\") (read-double-quoted-scalar source))
+      ((eql char #\')
+       (if (looks-like-mapping-key-p source)
+           (read-block-mapping source)
+           (read-single-quoted-scalar source)))
+      ((eql char #\")
+       (if (looks-like-mapping-key-p source)
+           (read-block-mapping source)
+           (read-double-quoted-scalar source)))
       ((and (eql char #\?)
             (let ((next (source-peek source 1)))
               (or (null next) (whitespace-p next) (line-break-p next))))

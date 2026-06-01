@@ -186,7 +186,10 @@ This is a minimal JSON parser for conformance comparison."
        (handler-case
            (let ((result (yaml:parse yaml-input)))
              (if expected-json-str
-                 (let ((expected (parse-json-string expected-json-str)))
+                 (let* ((outer (parse-json-string expected-json-str))
+                        (expected (if (stringp outer)
+                                      (parse-json-string outer)
+                                      outer)))
                    (if (values-equal-p result expected)
                        :pass
                        :fail))
