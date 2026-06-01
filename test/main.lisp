@@ -1,0 +1,119 @@
+;;;; main.lisp --- Test suite root and harness sanity checks.
+;;;;
+;;;; This file proves the Parachute harness loads and runs against the library.
+;;;; It also pins the LOUD-FAILURE contract at the skeleton stage: the public
+;;;; verbs are stubs and must SIGNAL, never return a sentinel. As real behavior
+;;;; lands, these stub-signal checks get replaced by the conformance suite and
+;;;; the scalar-resolution unit tests.
+
+(in-package #:yaml-parther/test)
+
+(define-test yaml-parther
+  :description "Root suite for the yaml-parther library.")
+
+(define-test harness
+  :parent yaml-parther
+  (true t "Parachute harness loads and runs."))
+
+(define-test stubs-signal-loudly
+  :parent yaml-parther
+  :description "Unimplemented verbs signal (no silent fallback)."
+  (fail (yaml:parse "x: 1") 'error)
+  (fail (yaml:parse-all "x: 1") 'error)
+  (fail (yaml:emit 42) 'error))
+
+;;; ---------------------------------------------------------------------------
+;;; Scalar resolution tests (core schema)
+;;; ---------------------------------------------------------------------------
+
+(define-test scalar-resolution
+  :parent yaml-parther
+  :description "Core schema scalar resolution.")
+
+(define-test null-resolution
+  :parent scalar-resolution
+  (is eq 'null (yaml-parther::resolve-scalar "")
+      "Empty string resolves to CL:NULL")
+  (is eq 'null (yaml-parther::resolve-scalar "~")
+      "Tilde resolves to CL:NULL")
+  (is eq 'null (yaml-parther::resolve-scalar "null")
+      "lowercase null resolves to CL:NULL")
+  (is eq 'null (yaml-parther::resolve-scalar "Null")
+      "Titlecase Null resolves to CL:NULL")
+  (is eq 'null (yaml-parther::resolve-scalar "NULL")
+      "Uppercase NULL resolves to CL:NULL"))
+
+(define-test boolean-resolution
+  :parent scalar-resolution
+  (is eq t (yaml-parther::resolve-scalar "true")
+      "lowercase true resolves to T")
+  (is eq t (yaml-parther::resolve-scalar "True")
+      "Titlecase True resolves to T")
+  (is eq t (yaml-parther::resolve-scalar "TRUE")
+      "Uppercase TRUE resolves to T")
+  (is eq nil (yaml-parther::resolve-scalar "false")
+      "lowercase false resolves to NIL")
+  (is eq nil (yaml-parther::resolve-scalar "False")
+      "Titlecase False resolves to NIL")
+  (is eq nil (yaml-parther::resolve-scalar "FALSE")
+      "Uppercase FALSE resolves to NIL"))
+
+(define-test integer-resolution
+  :parent scalar-resolution
+  (is = 42 (yaml-parther::resolve-scalar "42")
+      "Positive decimal integer")
+  (is = -42 (yaml-parther::resolve-scalar "-42")
+      "Negative decimal integer")
+  (is = 42 (yaml-parther::resolve-scalar "+42")
+      "Explicit positive decimal integer")
+  (is = 0 (yaml-parther::resolve-scalar "0")
+      "Zero")
+  (is = 15 (yaml-parther::resolve-scalar "0o17")
+      "Octal integer")
+  (is = 42 (yaml-parther::resolve-scalar "0x2A")
+      "Hex integer")
+  (is = 42 (yaml-parther::resolve-scalar "0x2a")
+      "Hex integer lowercase"))
+
+(define-test float-resolution
+  :parent scalar-resolution
+  (is = 3.14d0 (yaml-parther::resolve-scalar "3.14")
+      "Simple float")
+  (is = -3.14d0 (yaml-parther::resolve-scalar "-3.14")
+      "Negative float")
+  (is = 0.5d0 (yaml-parther::resolve-scalar ".5")
+      "Leading decimal point")
+  (is = 1.5d10 (yaml-parther::resolve-scalar "1.5e10")
+      "Float with exponent")
+  (is = most-positive-double-float (yaml-parther::resolve-scalar ".inf")
+      "Positive infinity")
+  (is = most-negative-double-float (yaml-parther::resolve-scalar "-.inf")
+      "Negative infinity"))
+
+(define-test string-resolution
+  :parent scalar-resolution
+  (is string= "hello" (yaml-parther::resolve-scalar "hello")
+      "Plain string")
+  (is string= "0o8" (yaml-parther::resolve-scalar "0o8")
+      "Invalid octal stays string")
+  (is string= "0xGG" (yaml-parther::resolve-scalar "0xGG")
+      "Invalid hex stays string"))
+
+(define-test explicit-tag-resolution
+  :parent scalar-resolution
+  (is string= "true" (yaml-parther::resolve-scalar "true" "tag:yaml.org,2002:str")
+      "!!str forces string even for boolean text")
+  (is = 42 (yaml-parther::resolve-scalar "42" "tag:yaml.org,2002:int")
+      "!!int parses integer")
+  (fail (yaml-parther::resolve-scalar "hello" "tag:yaml.org,2002:int") 'yaml-parther:yaml-tag-error
+      "!!int rejects non-integer")
+  (is eq t (yaml-parther::resolve-scalar "true" "tag:yaml.org,2002:bool")
+      "!!bool parses true")
+  (is eq nil (yaml-parther::resolve-scalar "false" "tag:yaml.org,2002:bool")
+      "!!bool parses false")
+  (fail (yaml-parther::resolve-scalar "hello" "tag:yaml.org,2002:bool") 'yaml-parther:yaml-tag-error
+      "!!bool rejects non-boolean"))
+
+(defun run ()
+  "Run the whole suite. Convenience entry point for `ros run`."
+  (parachute:test '#:yaml-parther/test))
