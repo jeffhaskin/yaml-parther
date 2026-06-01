@@ -38,6 +38,7 @@
                (:file "main")
                (:file "comments")
                (:file "document-framing")
+               (:file "quoted-scalars")
                (:file "conformance-data")
                (:file "conformance"))
   :perform (test-op (op c)
