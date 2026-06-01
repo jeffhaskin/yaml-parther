@@ -207,6 +207,12 @@ str: hello"))))
     (true (hash-table-p result) "Result is a hash-table")
     (is equal "value" (gethash "key" result) "key maps to value")))
 
+(define-test duplicate-key-signals-error
+  :parent block-mappings
+  (fail (yaml:parse "a: 1
+a: 2") 'yaml-parther:yaml-duplicate-key-error
+      "Duplicate key signals error"))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Block scalar tests
 ;;; ---------------------------------------------------------------------------
@@ -243,6 +249,20 @@ str: hello"))))
 ")))
     (is equal (format nil "line1~%line2~%") (gethash "text" result)
         "Literal scalar as mapping value")))
+
+;;; ---------------------------------------------------------------------------
+;;; Anchor tests
+;;; ---------------------------------------------------------------------------
+
+(define-test anchors
+  :parent yaml-parther
+  :description "Anchor parsing.")
+
+(define-test scalar-with-anchor
+  :parent anchors
+  (let ((result (yaml:parse "key: &myanchor value")))
+    (is equal "value" (gethash "key" result)
+        "Anchor attached to scalar value")))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Flow collection tests
@@ -314,6 +334,45 @@ str: hello"))))
     (true (hash-table-p result) "Outer is hash-table")
     (true (hash-table-p (gethash "outer" result)) "Inner is hash-table")
     (is equal "value" (gethash "inner" (gethash "outer" result)) "Nested value")))
+
+;;; ---------------------------------------------------------------------------
+;;; Complex & empty key tests
+;;; ---------------------------------------------------------------------------
+
+(define-test complex-keys
+  :parent yaml-parther
+  :description "Complex and empty key parsing.")
+
+(define-test flow-sequence-as-key
+  :parent complex-keys
+  :description "Flow sequence used as mapping key"
+  (let ((result (yaml:parse "? [a, b]
+: value")))
+    (true (hash-table-p result) "Result is hash-table")
+    (is = 1 (hash-table-count result) "One entry")))
+
+(define-test flow-mapping-as-key
+  :parent complex-keys
+  :description "Flow mapping used as mapping key"
+  (let ((result (yaml:parse "? {a: 1}
+: value")))
+    (true (hash-table-p result) "Result is hash-table")
+    (is = 1 (hash-table-count result) "One entry")))
+
+(define-test empty-key-with-value
+  :parent complex-keys
+  :description "Empty key (? :) with a value"
+  (let ((result (yaml:parse "? : value")))
+    (true (hash-table-p result) "Result is hash-table")
+    (is equal "value" (gethash 'null result) "null key maps to value")))
+
+(define-test quoted-string-as-key
+  :parent complex-keys
+  :description "Quoted string as explicit key"
+  (let ((result (yaml:parse "? 'hello world'
+: value")))
+    (true (hash-table-p result) "Result is hash-table")
+    (is equal "value" (gethash "hello world" result) "quoted key works")))
 
 (defun run ()
   "Run the whole suite. Convenience entry point for `ros run`."

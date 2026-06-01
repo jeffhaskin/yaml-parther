@@ -227,6 +227,30 @@ Expects cursor at '>'."
     (coerce chars 'string)))
 
 ;;; ---------------------------------------------------------------------------
+;;; Anchor handling
+;;; ---------------------------------------------------------------------------
+
+(defun anchor-char-p (char)
+  "Return T if CHAR is valid in an anchor name."
+  (and char
+       (or (alphanumericp char)
+           (find char "-_"))))
+
+(defun skip-anchor (source)
+  "Skip an anchor definition (&name) and trailing whitespace.
+Returns the anchor name as a string."
+  (unless (eql (source-peek source) #\&)
+    (return-from skip-anchor nil))
+  (source-advance source)
+  (let ((chars (make-array 0 :element-type 'character :adjustable t :fill-pointer 0)))
+    (loop for char = (source-peek source)
+          while (anchor-char-p char)
+          do (vector-push-extend char chars)
+             (source-advance source))
+    (source-skip-blanks source)
+    (coerce chars 'string)))
+
+;;; ---------------------------------------------------------------------------
 ;;; Block mapping reading
 ;;; ---------------------------------------------------------------------------
 
@@ -242,26 +266,36 @@ Expects cursor at '>'."
     (resolve-scalar (string-right-trim '(#\Space #\Tab) (coerce chars 'string)))))
 
 (defun read-explicit-key (source)
-  "Read an explicit key after '?' indicator. Returns the key value."
+  "Read an explicit key after '?' indicator. Returns the key value.
+Supports complex keys: flow collections, quoted strings, and plain scalars."
   (source-advance source) ; consume '?'
   (source-skip-blanks source)
-  (cond
-    ((or (source-eof-p source) (line-break-p (source-peek source)))
-     'null)
-    ((eql (source-peek source) #\:)
-     'null)
-    (t
-     (let ((chars (make-array 0 :element-type 'character :adjustable t :fill-pointer 0)))
-       (loop for char = (source-peek source)
-             while (and char
-                        (not (line-break-p char))
-                        (not (and (char= char #\:)
-                                  (or (null (source-peek source 1))
-                                      (whitespace-p (source-peek source 1))
-                                      (line-break-p (source-peek source 1))))))
-             do (vector-push-extend char chars)
-                (source-advance source))
-       (resolve-scalar (string-right-trim '(#\Space #\Tab) (coerce chars 'string)))))))
+  (let ((char (source-peek source)))
+    (cond
+      ((or (null char) (line-break-p char))
+       'null)
+      ((eql char #\:)
+       'null)
+      ((eql char #\[)
+       (read-flow-sequence source))
+      ((eql char #\{)
+       (read-flow-mapping source))
+      ((eql char #\')
+       (read-single-quoted-scalar source))
+      ((eql char #\")
+       (read-double-quoted-scalar source))
+      (t
+       (let ((chars (make-array 0 :element-type 'character :adjustable t :fill-pointer 0)))
+         (loop for c = (source-peek source)
+               while (and c
+                          (not (line-break-p c))
+                          (not (and (char= c #\:)
+                                    (or (null (source-peek source 1))
+                                        (whitespace-p (source-peek source 1))
+                                        (line-break-p (source-peek source 1))))))
+               do (vector-push-extend c chars)
+                  (source-advance source))
+         (resolve-scalar (string-right-trim '(#\Space #\Tab) (coerce chars 'string))))))))
 
 (defun read-block-mapping (source)
   "Read a block mapping from SOURCE. Returns a hash-table (test EQUAL).
@@ -288,6 +322,13 @@ Supports both implicit keys (key: value) and explicit keys (? key : value)."
           (return))
         (source-advance source)
         (source-skip-blanks source)
+        (when (nth-value 1 (gethash key table))
+          (error 'yaml-duplicate-key-error
+                 :key key
+                 :message (format nil "Duplicate mapping key: ~S" key)
+                 :position (source-position source)))
+        (when (eql (source-peek source) #\&)
+          (skip-anchor source))
         (let ((value (cond
                        ((or (source-eof-p source)
                             (line-break-p (source-peek source)))
@@ -509,6 +550,10 @@ Returns T if content follows, NIL if at EOF."
       ((line-break-p char) 'null)
       ((eql char #\[) (read-flow-sequence source))
       ((eql char #\{) (read-flow-mapping source))
+      ((and (eql char #\?)
+            (let ((next (source-peek source 1)))
+              (or (null next) (whitespace-p next) (line-break-p next))))
+       (read-block-mapping source))
       ((eql char #\-)
        (if (and (eql (source-peek source 1) #\-)
                 (eql (source-peek source 2) #\-)
