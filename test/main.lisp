@@ -114,6 +114,62 @@
   (fail (yaml-parther::resolve-scalar "hello" "tag:yaml.org,2002:bool") 'yaml-parther:yaml-tag-error
       "!!bool rejects non-boolean"))
 
+;;; ---------------------------------------------------------------------------
+;;; Block sequence tests
+;;; ---------------------------------------------------------------------------
+
+(define-test block-sequences
+  :parent yaml-parther
+  :description "Block sequence parsing.")
+
+(define-test single-item-sequence
+  :parent block-sequences
+  (let ((result (yaml-parther::read-block-sequence
+                 (yaml-parther::make-source "- foo"))))
+    (is equalp #("foo") result
+        "Single item sequence parses to vector")))
+
+(define-test multi-item-sequence
+  :parent block-sequences
+  (let ((result (yaml-parther::read-block-sequence
+                 (yaml-parther::make-source "- a
+- b
+- c"))))
+    (is equalp #("a" "b" "c") result
+        "Multi-item sequence parses to vector")))
+
+(define-test sequence-with-scalar-resolution
+  :parent block-sequences
+  (let ((result (yaml-parther::read-block-sequence
+                 (yaml-parther::make-source "- 1
+- true
+- null"))))
+    (is equalp #(1 t null) result
+        "Sequence items are resolved to native types")))
+
+(define-test empty-sequence-item
+  :parent block-sequences
+  (let ((result (yaml-parther::read-block-sequence
+                 (yaml-parther::make-source "-
+- b"))))
+    (is equalp #(null "b") result
+        "Empty sequence item becomes null")))
+
+;;; ---------------------------------------------------------------------------
+;;; Block mapping tests
+;;; ---------------------------------------------------------------------------
+
+(define-test block-mappings
+  :parent yaml-parther
+  :description "Block mapping parsing.")
+
+(define-test single-key-value-pair
+  :parent block-mappings
+  (let ((result (yaml-parther::read-block-mapping
+                 (yaml-parther::make-source "key: value"))))
+    (true (hash-table-p result) "Result is a hash-table")
+    (is equal "value" (gethash "key" result) "key maps to value")))
+
 (defun run ()
   "Run the whole suite. Convenience entry point for `ros run`."
   (parachute:test '#:yaml-parther/test))
