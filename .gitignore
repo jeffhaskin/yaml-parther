@@ -1,0 +1,26 @@
+# Compiled Lisp fasls (per-implementation)
+*.fasl
+*.fas
+*.lx64fsl
+*.dx64fsl
+*.abcl
+*.o
+
+# Editor / OS noise
+*~
+\#*\#
+.#*
+.DS_Store
+
+# ASDF / Roswell build artifacts
+/system-index.txt
+.qlot/
+.env
+.claude/settings.local.json
+
+# bv (beads viewer) local config and caches
+.bv/
+
+# Vendored test suite git artifacts
+tests/yaml-test-suite/.git/
+tests/yaml-test-suite/.github/
