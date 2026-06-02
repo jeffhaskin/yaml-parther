@@ -51,6 +51,32 @@
   (is eq nil (yaml-parther::resolve-scalar "FALSE")
       "Uppercase FALSE resolves to NIL"))
 
+(define-test boolean-resolution-version-aware
+  :parent scalar-resolution
+  :description "yes/no/on/off are booleans under YAML 1.1, plain strings under 1.2."
+  ;; --- Under 1.1: the dropped spellings are booleans ---
+  (let ((yaml-parther::*yaml-version* '(1 . 1)))
+    (is eq t (yaml-parther::resolve-scalar "yes") "1.1: yes -> T")
+    (is eq t (yaml-parther::resolve-scalar "Yes") "1.1: Yes -> T (case-insensitive)")
+    (is eq t (yaml-parther::resolve-scalar "on") "1.1: on -> T")
+    (is eq nil (yaml-parther::resolve-scalar "no") "1.1: no -> NIL")
+    (is eq nil (yaml-parther::resolve-scalar "off") "1.1: off -> NIL")
+    (is string= "y" (yaml-parther::resolve-scalar "y") "1.1: bare y is still a string"))
+  ;; --- Under 1.2 (the default): the same tokens stay strings ---
+  (is string= "yes" (yaml-parther::resolve-scalar "yes") "1.2: yes stays a string")
+  (is string= "no" (yaml-parther::resolve-scalar "no") "1.2: no stays a string")
+  (is string= "on" (yaml-parther::resolve-scalar "on") "1.2: on stays a string")
+  (is string= "off" (yaml-parther::resolve-scalar "off") "1.2: off stays a string")
+  (is string= "y" (yaml-parther::resolve-scalar "y") "1.2: bare y is a string")
+  ;; --- End to end: the %YAML directive selects the behavior ---
+  (is eq t (gethash "flag" (yaml-parther:parse (format nil "%YAML 1.1~%---~%flag: yes")))
+      "%YAML 1.1 document: flag: yes -> T")
+  (is string= "yes" (gethash "flag" (yaml-parther:parse "flag: yes"))
+      "directive-less (1.2) document: flag: yes -> \"yes\"")
+  ;; Quoting defeats typing regardless of version.
+  (is string= "no" (gethash "key" (yaml-parther:parse (format nil "%YAML 1.1~%---~%key: \"no\"")))
+      "1.1 document: quoted \"no\" stays a string"))
+
 (define-test integer-resolution
   :parent scalar-resolution
   (is = 42 (yaml-parther::resolve-scalar "42")
@@ -68,6 +94,32 @@
   (is = 42 (yaml-parther::resolve-scalar "0x2a")
       "Hex integer lowercase"))
 
+(define-test integer-resolution-version-aware
+  :parent scalar-resolution
+  :description "Leading-zero octal and sexagesimal are 1.1-only readings."
+  ;; --- Under 1.1 ---
+  (let ((yaml-parther::*yaml-version* '(1 . 1)))
+    (is = 511 (yaml-parther::resolve-scalar "0777") "1.1: 0777 -> 511 (octal)")
+    (is = 8 (yaml-parther::resolve-scalar "010") "1.1: 010 -> 8 (octal)")
+    (is = -8 (yaml-parther::resolve-scalar "-010") "1.1: -010 -> -8")
+    (is = 72200 (yaml-parther::resolve-scalar "20:03:20") "1.1: 20:03:20 -> 72200")
+    (is = 7384 (yaml-parther::resolve-scalar "2:03:04") "1.1: 2:03:04 -> 7384")
+    ;; Boundaries / non-matches stay as strings even under 1.1.
+    (is string= "20:60:00" (yaml-parther::resolve-scalar "20:60:00")
+        "1.1: out-of-range (60) group is not sexagesimal")
+    (is string= "0:30" (yaml-parther::resolve-scalar "0:30")
+        "1.1: leading-zero first group is not sexagesimal"))
+  ;; --- Under 1.2 (the default): 1.2 numeric semantics win ---
+  (is = 777 (yaml-parther::resolve-scalar "0777") "1.2: 0777 -> decimal 777")
+  (is = 10 (yaml-parther::resolve-scalar "010") "1.2: 010 -> decimal 10")
+  (is string= "20:03:20" (yaml-parther::resolve-scalar "20:03:20")
+      "1.2: 20:03:20 stays a string")
+  ;; 0o/0x octal and hex are 1.2 core schema -- valid in any version.
+  (is = 15 (yaml-parther::resolve-scalar "0o17") "0o17 -> 15 in any version")
+  (is = 8 (let ((yaml-parther::*yaml-version* '(1 . 1)))
+            (yaml-parther::resolve-scalar "0o10"))
+      "0o10 -> 8 under 1.1 too"))
+
 (define-test float-resolution
   :parent scalar-resolution
   (is = 3.14d0 (yaml-parther::resolve-scalar "3.14")
@@ -81,7 +133,12 @@
   (is = most-positive-double-float (yaml-parther::resolve-scalar ".inf")
       "Positive infinity")
   (is = most-negative-double-float (yaml-parther::resolve-scalar "-.inf")
-      "Negative infinity"))
+      "Negative infinity")
+  ;; .nan must produce an actual NaN double (never signal). NaN /= NaN, so we
+  ;; detect it structurally rather than by comparison.
+  #+sbcl
+  (true (sb-ext:float-nan-p (yaml-parther::resolve-scalar ".nan"))
+        ".nan resolves to a NaN double-float"))
 
 (define-test string-resolution
   :parent scalar-resolution
@@ -290,6 +347,53 @@ actual:
       (is equal 1 (gethash "a" actual) "Merged key a")
       (is equal 2 (gethash "b" actual) "Local key b"))))
 
+(define-test merge-override-explicit-wins
+  :parent merge-keys
+  :description "An explicit key overrides a merged one regardless of order."
+  ;; `<<` first, then an explicit key that shadows a merged key (the canonical
+  ;; pattern). Must NOT raise a duplicate-key error; the explicit value wins.
+  (let* ((result (yaml:parse "base: &b { name: default, access: read-only }
+user:
+  <<: *b
+  name: admin
+  access: admin"))
+         (user (gethash "user" result)))
+    (is string= "admin" (gethash "name" user) "Explicit name overrides merged")
+    (is string= "admin" (gethash "access" user) "Explicit access overrides merged"))
+  ;; The reverse order must still work and agree.
+  (let* ((result (yaml:parse "base: &b { name: default, access: read-only }
+user:
+  name: admin
+  <<: *b"))
+         (user (gethash "user" result)))
+    (is string= "admin" (gethash "name" user) "Explicit (before merge) wins")
+    (is string= "read-only" (gethash "access" user) "Merge fills the gap"))
+  ;; Two *explicit* same-named keys are still a genuine duplicate-key error,
+  ;; even with a merge present.
+  (fail (yaml:parse "base: &b { x: 1 }
+user:
+  <<: *b
+  name: a
+  name: c") 'yaml-parther:yaml-duplicate-key-error
+    "Explicit-vs-explicit duplicate still errors"))
+
+(define-test flow-mapping-merge
+  :parent merge-keys
+  :description "Merge key works inside a flow mapping, with override either order."
+  ;; `<<` first, explicit override after.
+  (let* ((r (yaml:parse "base: &b { a: 1, b: 2 }
+merged: { <<: *b, b: 99, c: 3 }"))
+         (m (gethash "merged" r)))
+    (is = 1 (gethash "a" m) "Flow merge: a from base")
+    (is = 99 (gethash "b" m) "Flow merge: explicit b overrides merged")
+    (is = 3 (gethash "c" m) "Flow merge: local c"))
+  ;; Explicit first, `<<` after: explicit still wins, merge fills the gap.
+  (let* ((r (yaml:parse "base: &b { a: 1, b: 2 }
+merged: { b: 99, <<: *b }"))
+         (m (gethash "merged" r)))
+    (is = 1 (gethash "a" m) "Flow merge (reversed): a fills the gap")
+    (is = 99 (gethash "b" m) "Flow merge (reversed): explicit b wins")))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Flow collection tests
 ;;; ---------------------------------------------------------------------------
@@ -468,6 +572,61 @@ actual:
   (let ((result (yaml:parse "{  a  :  1  ,  b  :  2  }")))
     (is = 1 (gethash "a" result) "Spaces in mapping")
     (is = 2 (gethash "b" result) "Second pair")))
+
+;;; ---------------------------------------------------------------------------
+;;; Example fixture: examples/complex.yaml
+;;;
+;;; A dense, real-world-flavored stream that exercises a broad cross-section of
+;;; supported constructs in one document set: block/flow collections, literal &
+;;; folded scalars (with all chomping indicators), single/double quoting,
+;;; explicit (?/:) keys, anchors/aliases, merge keys with override, explicit
+;;; core tags, deep nesting -- and a trailing %YAML 1.1 document that drives the
+;;; 1.1 backwards-compat readings. The point is that the whole thing PARSES, and
+;;; that version-sensitive scalars resolve per their document's version.
+;;; ---------------------------------------------------------------------------
+
+(define-test complex-example-fixture
+  :parent yaml-parther
+  :description "examples/complex.yaml parses, with version-correct resolution."
+  (let* ((path (merge-pathnames "examples/complex.yaml"
+                                (asdf:system-source-directory :yaml-parther)))
+         (text (uiop:read-file-string path))
+         (docs (yaml:parse-all text)))
+    (is = 4 (length docs) "Stream has four documents")
+    ;; Document 1: .nan resolves to an actual NaN (no float trap).
+    #+sbcl
+    (let ((nums (gethash "numbers_1_2" (aref docs 0))))
+      (true (sb-ext:float-nan-p (gethash "not_a_number" nums))
+            "doc1: .nan -> NaN double"))
+    ;; Document 2: merge key followed by overriding explicit keys, plus a
+    ;; flow-mapping merge.
+    (let* ((d2 (aref docs 1))
+           (u0 (aref (gethash "users" d2) 0)))
+      (is string= "admin" (gethash "name" u0)
+          "doc2: explicit name overrides merged default")
+      (is string= "admin" (gethash "access" u0)
+          "doc2: explicit access overrides merged read-only")
+      (let ((flow (gethash "merged_in_flow"
+                           (gethash "advanced_usage" d2))))
+        (is string= "default" (gethash "name" flow)
+            "doc2: flow merge pulls name from default_user")
+        (is string= "admin" (gethash "access" flow)
+            "doc2: flow merge explicit access overrides merged")))
+    ;; Document 4: %YAML 1.1 -- legacy readings are live here.
+    (let* ((d4 (aref docs 3))
+           (legacy (gethash "legacy_1_1" d4))
+           (bools (gethash "booleans" legacy))
+           (nums (gethash "numbers" legacy)))
+      (is eq t (gethash "enabled" bools) "doc4: yes -> T (1.1)")
+      (is eq nil (gethash "quiet" bools) "doc4: off -> NIL (1.1)")
+      (is equalp #("y" "n") (gethash "not_booleans" legacy)
+          "doc4: bare y/n stay strings even under 1.1")
+      (is = 511 (gethash "file_mode" nums) "doc4: 0777 -> 511 (1.1 octal)")
+      (is = 420 (gethash "dir_mode" nums) "doc4: 0644 -> 420 (1.1 octal)")
+      (is = 72200 (gethash "elapsed_time" nums)
+          "doc4: 20:03:20 -> 72200 (1.1 sexagesimal)")
+      (is = 60 (gethash "timeout" (gethash "job" legacy))
+          "doc4: merge + override works under 1.1 too"))))
 
 (defun run ()
   "Run the whole suite. Convenience entry point for `ros run`."

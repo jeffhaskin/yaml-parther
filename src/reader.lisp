@@ -1017,6 +1017,13 @@ Registers the anchor and returns the value."
         (setf (gethash anchor *anchor-table*) value))
       value)))
 
+(defvar *nested-value-was-flow* nil
+  "Bound to NIL around a next-line value read; set to T by READ-NESTED-VALUE when
+the value it returned was a FLOW collection. A flow collection leaves the cursor
+mid-line (just past its closing `}`/`]`), unlike a block collection, which parks
+it on the next line. The block-mapping value path consults this to decide whether
+the common end-of-line consumption must still run.")
+
 (defun read-nested-value (source indent)
   "Read a nested value at the given INDENT level. Dispatches based on first character."
   ;; Spatial indentation has already been consumed by the caller. Any remaining
@@ -1050,8 +1057,12 @@ Registers the anchor and returns the value."
       ;; flow collection followed by `:` is a flow key opening a block mapping.
       ((looks-like-mapping-key-p source)
        (let ((*node-indent-floor* nil)) (read-block-mapping source)))
-      ((eql char #\[) (let ((*flow-indent* (1- indent)) (*node-indent-floor* nil)) (read-flow-sequence source)))
-      ((eql char #\{) (let ((*flow-indent* (1- indent)) (*node-indent-floor* nil)) (read-flow-mapping source)))
+      ((eql char #\[)
+       (setf *nested-value-was-flow* t)
+       (let ((*flow-indent* (1- indent)) (*node-indent-floor* nil)) (read-flow-sequence source)))
+      ((eql char #\{)
+       (setf *nested-value-was-flow* t)
+       (let ((*flow-indent* (1- indent)) (*node-indent-floor* nil)) (read-flow-mapping source)))
       ((eql char #\') (read-single-quoted-scalar source))
       ((eql char #\") (read-double-quoted-scalar source))
       ;; A block scalar's explicit indent indicator is relative to the enclosing
@@ -1122,6 +1133,11 @@ a block sequence written at MAP-INDENT."
   "Read a block mapping from SOURCE. Returns a hash-table (test EQUAL).
 Supports both implicit keys (key: value) and explicit keys (? key : value)."
   (let ((table (make-hash-table :test #'equal))
+        ;; Keys inserted by a merge key (`<<`) are "weak": an explicit key may
+        ;; override them without it counting as a duplicate (explicit always
+        ;; wins, regardless of whether `<<` came before or after). We track them
+        ;; here so genuine explicit-vs-explicit duplicates still error.
+        (merged-keys (make-hash-table :test #'equal))
         (map-indent (source-column source))
         (saw-explicit nil)
         ;; A mapping that begins on a `---` marker line is anchored at the
@@ -1204,12 +1220,14 @@ Supports both implicit keys (key: value) and explicit keys (? key : value)."
                               (setf at-line-start t))
                             v))
                         'null)))
-              (when (nth-value 1 (gethash key table))
+              (when (and (nth-value 1 (gethash key table))
+                         (not (gethash key merged-keys)))
                 (error 'yaml-duplicate-key-error
                        :key key
                        :message (format nil "Duplicate mapping key: ~S" key)
                        :position (source-position source)))
-              (setf (gethash key table) value)))
+              (setf (gethash key table) value)
+              (remhash key merged-keys)))
           ;; Position at the next entry / end.
           (unless at-line-start
             (source-skip-to-eol source)
@@ -1290,7 +1308,9 @@ Supports both implicit keys (key: value) and explicit keys (? key : value)."
         ;; a following line.
         (when (eql (source-peek source) #\#)
           (source-skip-comment source))
-        (when (nth-value 1 (gethash key table))
+        (when (and (nth-value 1 (gethash key table))
+                   ;; Overriding a merge-provided key is allowed, not a dup.
+                   (not (gethash key merged-keys)))
           (error 'yaml-duplicate-key-error
                  :key key
                  :message (format nil "Duplicate mapping key: ~S" key)
@@ -1346,15 +1366,27 @@ Supports both implicit keys (key: value) and explicit keys (? key : value)."
                                               (not (looks-like-mapping-key-p source)))
                                      (yaml-parse-fail 'yaml-structure-error source
                                                       "Node carries more than one anchor"))
-                                   (let ((v (let ((*node-indent-floor* map-indent))
-                                              (read-nested-value source nested-indent))))
-                                     ;; Collections position the cursor past
-                                     ;; their content; leaf scalars leave it
-                                     ;; on the trailing line, so let the
-                                     ;; common eol-consumption run for them.
-                                     (when (or (hash-table-p v) (and (vectorp v) (not (stringp v))))
-                                       (setf nested-p t))
-                                     v))
+                                   (let ((*nested-value-was-flow* nil))
+                                     (let ((v (let ((*node-indent-floor* map-indent))
+                                                (read-nested-value source nested-indent))))
+                                       ;; A BLOCK collection parks the cursor on the
+                                       ;; next, dedented line, so the common
+                                       ;; eol-consumption must NOT run (treat as
+                                       ;; nested). A FLOW collection
+                                       ;; (`&a {x: 1}` / `&a [1, 2]`) leaves the
+                                       ;; cursor mid-line just past its `}`/`]`,
+                                       ;; exactly like a scalar, so eol-consumption
+                                       ;; still has to advance to the next line --
+                                       ;; otherwise the following sibling key is lost
+                                       ;; (and, under PARSE-ALL, mis-read as a second
+                                       ;; document, dropping the anchor table with
+                                       ;; it). Distinguish by FORM, reported by
+                                       ;; READ-NESTED-VALUE, not by Lisp type.
+                                       (when (and (or (hash-table-p v)
+                                                      (and (vectorp v) (not (stringp v))))
+                                                  (not *nested-value-was-flow*))
+                                         (setf nested-p t))
+                                       v)))
                                   ;; A block sequence may be written at the same
                                   ;; indentation as its parent mapping key.
                                   ((and (= nested-indent map-indent)
@@ -1393,11 +1425,17 @@ Supports both implicit keys (key: value) and explicit keys (? key : value)."
             (when (and anchor-name *anchor-table*)
               (setf (gethash anchor-name *anchor-table*) value))
             (if (and (stringp key) (string= key "<<") (hash-table-p value))
+                ;; Merge: fill only gaps (existing keys -- explicit or from an
+                ;; earlier merge -- win), and mark newly added keys as weak.
                 (maphash (lambda (k v)
                            (unless (nth-value 1 (gethash k table))
-                             (setf (gethash k table) v)))
+                             (setf (gethash k table) v)
+                             (setf (gethash k merged-keys) t)))
                          value)
-                (setf (gethash key table) value))
+                (progn
+                  ;; An explicit key supersedes any weak merge-provided key.
+                  (setf (gethash key table) value)
+                  (remhash key merged-keys)))
             (unless nested-p
               ;; After a quoted scalar value, only whitespace and a comment may
               ;; follow on the line; trailing content is an error.
@@ -1699,6 +1737,9 @@ after which a mapping `:` may appear adjacent with no separating whitespace."
                         (or (null n) (whitespace-p n) (line-break-p n)
                             (find n ",[]{}")))))
              (if (equal tag "tag:yaml.org,2002:str") "" 'null))
+            ;; An alias node (`*name`) resolves to its anchored value. Aliases
+            ;; carry no properties, so this is a complete node on its own.
+            ((eql char #\*) (read-alias source))
             ((eql char #\[) (read-flow-sequence source))
             ((eql char #\{) (read-flow-mapping source))
             ((eql char #\') (read-single-quoted-scalar source))
@@ -1807,6 +1848,17 @@ Returns a hash-table (test EQUAL)."
     (error 'yaml-scanner-error :message "Expected opening brace"))
   (let ((table (make-hash-table :test #'equal))
         (*pending-tag* nil))
+    (flet ((insert (key value)
+             ;; Merge key (`<<`) support in flow mappings, mirroring block
+             ;; mappings: a `<<` whose value is a mapping fills only the gaps
+             ;; (existing keys win), so an explicit key overrides a merged one
+             ;; whether it appears before or after the `<<`.
+             (if (and (stringp key) (string= key "<<") (hash-table-p value))
+                 (maphash (lambda (k v)
+                            (unless (nth-value 1 (gethash k table))
+                              (setf (gethash k table) v)))
+                          value)
+                 (setf (gethash key table) value))))
     (source-advance source) ; consume {
     (flow-skip-separation source)
     (loop
@@ -1836,7 +1888,7 @@ Returns a hash-table (test EQUAL)."
                                   'null
                                   (read-flow-node source)))
                             'null)))
-             (setf (gethash key table) value))))
+             (insert key value))))
         (t
          (let ((key (read-flow-mapping-key source)))
            (source-skip-flow-whitespace source)
@@ -1854,7 +1906,7 @@ Returns a hash-table (test EQUAL)."
                           (t
                            (error 'yaml-scanner-error
                                   :message "Expected : after mapping key")))))
-             (setf (gethash key table) value)))))
+             (insert key value)))))
       (source-skip-flow-whitespace source)
       (cond
         ((eql (source-peek source) #\,)
@@ -1862,7 +1914,7 @@ Returns a hash-table (test EQUAL)."
         ((eql (source-peek source) #\})
          nil) ; will be consumed on next iteration
         (t
-         (error 'yaml-scanner-error :message "Expected , or } in flow mapping"))))))
+         (error 'yaml-scanner-error :message "Expected , or } in flow mapping")))))))
 
 (defun read-flow-mapping-key (source)
   "Read a flow mapping key (which may carry node properties, e.g. `!!str`)."
@@ -1940,6 +1992,44 @@ blank/EOF appears on this line, outside of any quoted region. Quoted spans
                  ((char= c #\\) (incf i 2))
                  ((char= c #\") (incf i) (return))
                  (t (incf i))))))
+          ;; Skip a balanced flow-collection span ({...} or [...]) that opens at a
+          ;; node boundary: a `:` INSIDE a flow collection is not a block mapping
+          ;; indicator (`&a {x: 1, y: 2}` is a flow-mapping value, not a key). A
+          ;; `:` AFTER the span still counts, so a flow collection used as a
+          ;; complex key (`[a, b]: v`) is still recognised. An unterminated span
+          ;; on this line means there is no simple key here.
+          ((and (or (char= char #\{) (char= char #\[))
+                (let ((p (source-peek source (1- i))))
+                  (or (zerop i) (null p) (whitespace-p p))))
+           (let ((depth 0))
+             (loop
+               (let ((c (source-peek source i)))
+                 (cond
+                   ((or (null c) (line-break-p c))
+                    (return-from looks-like-mapping-key-p nil))
+                   ((char= c #\")
+                    (incf i)
+                    (loop for d = (source-peek source i) do
+                      (cond ((or (null d) (line-break-p d))
+                             (return-from looks-like-mapping-key-p nil))
+                            ((char= d #\\) (incf i 2))
+                            ((char= d #\") (incf i) (return))
+                            (t (incf i)))))
+                   ((char= c #\')
+                    (incf i)
+                    (loop for d = (source-peek source i) do
+                      (cond ((or (null d) (line-break-p d))
+                             (return-from looks-like-mapping-key-p nil))
+                            ((char= d #\')
+                             (if (eql (source-peek source (1+ i)) #\')
+                                 (incf i 2)
+                                 (progn (incf i) (return))))
+                            (t (incf i)))))
+                   ((or (char= c #\{) (char= c #\[)) (incf depth) (incf i))
+                   ((or (char= c #\}) (char= c #\]))
+                    (decf depth) (incf i)
+                    (when (<= depth 0) (return)))
+                   (t (incf i)))))))
           ((and (char= char #\:)
                 (let ((next (source-peek source (1+ i))))
                   (or (null next) (whitespace-p next) (line-break-p next))))
@@ -2099,6 +2189,10 @@ document. Restores the cursor before returning."
   "Read exactly one YAML document from SOURCE, returning its native Lisp value."
   (let ((*anchor-table* (make-hash-table :test #'equal))
         (*tag-handles* nil)
+        ;; Each document resets to the default version (1.2). A %YAML directive
+        ;; in this document's prologue (read by READ-DIRECTIVES below) overrides
+        ;; it for this document only -- versions do not leak across documents.
+        (*yaml-version* '(1 . 2))
         (had-start nil))
     (source-skip-whitespace-and-comments source)
     (when (source-eof-p source)
