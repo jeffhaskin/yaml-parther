@@ -1,0 +1,74 @@
+{
+  "ok": true,
+  "stats": { "nodes": 24, "levels": 3, "rendered": 24 },
+  "repl": "#<HASH-TABLE :TEST EQUAL :COUNT 7 {1004A2B3}>\n;; contents (derived, not part of the printed form):\n  \"name\"       => \"yaml-parther\"\n  \"version\"    => 0.9d0\n  \"stable\"     => T\n  \"deprecated\" => NIL\n  \"maintainer\" => NULL\n  \"port\"       => 8080\n  \"tags\"       => #(\"lisp\" \"parser\" \"yaml\")\n  \"limits\"     => #<HASH-TABLE :TEST EQUAL :COUNT 3 {1004C7F1}>",
+  "_sourceYaml": "name: yaml-parther\nversion: 0.9\nstable: true\ndeprecated: false\nmaintainer: null\nport: 8080\ntags:\n  - lisp\n  - parser\n  - yaml\nlimits:\n  max_depth: 12\n  pi: 3.14159\n  enabled: true",
+  "root": {
+    "type": "hash-table",
+    "test": "EQUAL",
+    "childCount": 7,
+    "repl": "#<HASH-TABLE :TEST EQUAL :COUNT 7 {1004A2B3}>",
+    "entries": [
+      {
+        "key": { "type": "string", "value": "name", "repl": "\"name\"" },
+        "val": { "type": "string", "value": "yaml-parther", "repl": "\"yaml-parther\"" }
+      },
+      {
+        "key": { "type": "string", "value": "version", "repl": "\"version\"" },
+        "val": { "type": "float", "value": 0.9, "lisp": "0.9d0", "repl": "0.9d0" }
+      },
+      {
+        "key": { "type": "string", "value": "stable", "repl": "\"stable\"" },
+        "val": { "type": "true", "repl": "T" }
+      },
+      {
+        "key": { "type": "string", "value": "deprecated", "repl": "\"deprecated\"" },
+        "val": { "type": "false", "repl": "NIL" }
+      },
+      {
+        "key": { "type": "string", "value": "maintainer", "repl": "\"maintainer\"" },
+        "val": { "type": "null", "repl": "NULL" }
+      },
+      {
+        "key": { "type": "string", "value": "port", "repl": "\"port\"" },
+        "val": { "type": "integer", "value": 8080, "lisp": "8080", "repl": "8080" }
+      },
+      {
+        "key": { "type": "string", "value": "tags", "repl": "\"tags\"" },
+        "val": {
+          "type": "vector",
+          "childCount": 3,
+          "repl": "#(\"lisp\" \"parser\" \"yaml\")",
+          "items": [
+            { "type": "string", "value": "lisp", "repl": "\"lisp\"" },
+            { "type": "string", "value": "parser", "repl": "\"parser\"" },
+            { "type": "string", "value": "yaml", "repl": "\"yaml\"" }
+          ]
+        }
+      },
+      {
+        "key": { "type": "string", "value": "limits", "repl": "\"limits\"" },
+        "val": {
+          "type": "hash-table",
+          "test": "EQUAL",
+          "childCount": 3,
+          "repl": "#<HASH-TABLE :TEST EQUAL :COUNT 3 {1004C7F1}>",
+          "entries": [
+            {
+              "key": { "type": "string", "value": "max_depth", "repl": "\"max_depth\"" },
+              "val": { "type": "integer", "value": 12, "lisp": "12", "repl": "12" }
+            },
+            {
+              "key": { "type": "string", "value": "pi", "repl": "\"pi\"" },
+              "val": { "type": "float", "value": 3.14159, "lisp": "3.14159d0", "repl": "3.14159d0" }
+            },
+            {
+              "key": { "type": "string", "value": "enabled", "repl": "\"enabled\"" },
+              "val": { "type": "true", "repl": "T" }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

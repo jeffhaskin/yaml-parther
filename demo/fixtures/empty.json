@@ -1,0 +1,7 @@
+{
+  "ok": true,
+  "stats": { "nodes": 1, "levels": 1, "rendered": 1 },
+  "repl": "NULL",
+  "_sourceYaml": "# an empty document\n--- null\n",
+  "root": { "type": "null", "repl": "NULL" }
+}

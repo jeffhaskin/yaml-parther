@@ -1,0 +1,45 @@
+{
+  "ok": true,
+  "documents": [
+    {
+      "stats": { "nodes": 4, "levels": 2, "rendered": 4 },
+      "repl": "#<HASH-TABLE :TEST EQUAL :COUNT 2 {1007A100}>\n;; contents (derived, not part of the printed form):\n  \"kind\"    => \"Deployment\"\n  \"replicas\" => 3",
+      "_sourceYaml": "kind: Deployment\nreplicas: 3\n",
+      "root": {
+        "type": "hash-table", "test": "EQUAL", "childCount": 2,
+        "repl": "#<HASH-TABLE :TEST EQUAL :COUNT 2 {1007A100}>",
+        "entries": [
+          { "key": { "type": "string", "value": "kind", "repl": "\"kind\"" },
+            "val": { "type": "string", "value": "Deployment", "repl": "\"Deployment\"" } },
+          { "key": { "type": "string", "value": "replicas", "repl": "\"replicas\"" },
+            "val": { "type": "integer", "value": 3, "lisp": "3", "repl": "3" } }
+        ]
+      }
+    },
+    {
+      "stats": { "nodes": 5, "levels": 2, "rendered": 5 },
+      "repl": "#<HASH-TABLE :TEST EQUAL :COUNT 2 {1007B200}>\n;; contents (derived, not part of the printed form):\n  \"kind\"  => \"Service\"\n  \"ports\" => #(80 443)",
+      "_sourceYaml": "kind: Service\nports: [80, 443]\n",
+      "root": {
+        "type": "hash-table", "test": "EQUAL", "childCount": 2,
+        "repl": "#<HASH-TABLE :TEST EQUAL :COUNT 2 {1007B200}>",
+        "entries": [
+          { "key": { "type": "string", "value": "kind", "repl": "\"kind\"" },
+            "val": { "type": "string", "value": "Service", "repl": "\"Service\"" } },
+          { "key": { "type": "string", "value": "ports", "repl": "\"ports\"" },
+            "val": { "type": "vector", "childCount": 2, "repl": "#(80 443)",
+              "items": [
+                { "type": "integer", "value": 80, "lisp": "80", "repl": "80" },
+                { "type": "integer", "value": 443, "lisp": "443", "repl": "443" }
+              ] } }
+        ]
+      }
+    },
+    {
+      "stats": { "nodes": 1, "levels": 1, "rendered": 1 },
+      "repl": "NULL",
+      "_sourceYaml": "--- null\n",
+      "root": { "type": "null", "repl": "NULL" }
+    }
+  ]
+}

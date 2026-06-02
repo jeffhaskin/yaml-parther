@@ -1,0 +1,5 @@
+.shots/
+node_modules/
+package-lock.json
+
+.refs/

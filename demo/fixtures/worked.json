@@ -1,0 +1,53 @@
+{
+  "ok": true,
+  "stats": { "nodes": 9, "levels": 2, "rendered": 9 },
+  "repl": "#<HASH-TABLE :TEST EQUAL :COUNT 5 {1004A2B3}>\n;; contents (derived, not part of the printed form):\n  \"host\"    => \"localhost\"\n  \"port\"    => 5432\n  \"enabled\" => T\n  \"replica\" => NULL\n  \"tags\"    => #(\"primary\" \"ssd\")",
+  "_sourceYaml": "database:\n  host: localhost\n  port: 5432\n  enabled: true\n  replica: null\n  tags: [\"primary\", \"ssd\"]\n",
+  "root": {
+    "type": "hash-table",
+    "test": "EQUAL",
+    "childCount": 1,
+    "repl": "#<HASH-TABLE :TEST EQUAL :COUNT 1 {100490A0}>",
+    "entries": [
+      {
+        "key": { "type": "string", "value": "database", "repl": "\"database\"" },
+        "val": {
+          "type": "hash-table",
+          "test": "EQUAL",
+          "childCount": 5,
+          "repl": "#<HASH-TABLE :TEST EQUAL :COUNT 5 {1004A2B3}>",
+          "entries": [
+            {
+              "key": { "type": "string", "value": "host", "repl": "\"host\"" },
+              "val": { "type": "string", "value": "localhost", "repl": "\"localhost\"" }
+            },
+            {
+              "key": { "type": "string", "value": "port", "repl": "\"port\"" },
+              "val": { "type": "integer", "value": 5432, "lisp": "5432", "repl": "5432" }
+            },
+            {
+              "key": { "type": "string", "value": "enabled", "repl": "\"enabled\"" },
+              "val": { "type": "true", "repl": "T" }
+            },
+            {
+              "key": { "type": "string", "value": "replica", "repl": "\"replica\"" },
+              "val": { "type": "null", "repl": "NULL" }
+            },
+            {
+              "key": { "type": "string", "value": "tags", "repl": "\"tags\"" },
+              "val": {
+                "type": "vector",
+                "childCount": 2,
+                "repl": "#(\"primary\" \"ssd\")",
+                "items": [
+                  { "type": "string", "value": "primary", "repl": "\"primary\"" },
+                  { "type": "string", "value": "ssd", "repl": "\"ssd\"" }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

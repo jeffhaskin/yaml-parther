@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>yaml-parther · workbench</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <link
+      rel="preload"
+      href="./fonts/Inter-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="./fonts/JetBrainsMono-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+  </head>
+  <body>
+    <!-- one SVG sprite: the 3 non-guaranteed type glyphs render as <use>,
+         plus chevron + UI icons. currentColor-tinted so type color flows in. -->
+    <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+      <defs>
+        <!-- true: solid up triangle -->
+        <symbol id="g-true" viewBox="0 0 16 16">
+          <path d="M8 2.5 14 13H2L8 2.5Z" />
+        </symbol>
+        <!-- false (nil): hollow down triangle (shape-distinct from true) -->
+        <symbol id="g-nil" viewBox="0 0 16 16">
+          <path
+            d="M8 13.5 2 3h12L8 13.5Z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <!-- null: slashed circle (the empty set) -->
+        <symbol id="g-null" viewBox="0 0 16 16">
+          <circle
+            cx="8"
+            cy="8"
+            r="5.4"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+          />
+          <line
+            x1="4.2"
+            y1="11.8"
+            x2="11.8"
+            y2="4.2"
+            stroke="currentColor"
+            stroke-width="1.5"
+          />
+        </symbol>
+        <!-- chevron / twisty -->
+        <symbol id="g-chevron" viewBox="0 0 16 16">
+          <path d="M6 4l5 4-5 4V4Z" />
+        </symbol>
+        <symbol id="g-copy" viewBox="0 0 16 16">
+          <path
+            d="M5.5 2.5h6a1 1 0 0 1 1 1v8h-1.5V4H5.5V2.5Zm-2 2.5h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Zm.5 1.5v5h5v-5h-5Z"
+          />
+        </symbol>
+        <symbol id="g-check" viewBox="0 0 16 16">
+          <path d="M6.4 11.2 3 7.8l1.1-1.1 2.3 2.3 5-5L12.5 5l-6.1 6.2Z" />
+        </symbol>
+        <symbol id="g-eye" viewBox="0 0 16 16">
+          <path
+            d="M8 3.5c3.2 0 5.8 2.2 6.8 4.5C13.8 10.3 11.2 12.5 8 12.5S2.2 10.3 1.2 8C2.2 5.7 4.8 3.5 8 3.5Zm0 1.6a2.9 2.9 0 1 0 0 5.8 2.9 2.9 0 0 0 0-5.8Zm0 1.4a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3Z"
+          />
+        </symbol>
+        <symbol id="g-sun" viewBox="0 0 16 16">
+          <circle cx="8" cy="8" r="3" />
+          <g stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+            <line x1="8" y1="1.5" x2="8" y2="3" />
+            <line x1="8" y1="13" x2="8" y2="14.5" />
+            <line x1="1.5" y1="8" x2="3" y2="8" />
+            <line x1="13" y1="8" x2="14.5" y2="8" />
+            <line x1="3.5" y1="3.5" x2="4.6" y2="4.6" />
+            <line x1="11.4" y1="11.4" x2="12.5" y2="12.5" />
+            <line x1="12.5" y1="3.5" x2="11.4" y2="4.6" />
+            <line x1="4.6" y1="11.4" x2="3.5" y2="12.5" />
+          </g>
+        </symbol>
+        <symbol id="g-tree" viewBox="0 0 16 16">
+          <path
+            d="M2 3.5h6M2 7h9M5 7v3.5M5 10.5h6M2 3.5v7"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.4"
+            stroke-linecap="round"
+          />
+        </symbol>
+        <symbol id="g-repl" viewBox="0 0 16 16">
+          <path
+            d="M3 4.5 6 8l-3 3.5M8 11h5"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <symbol id="g-upload" viewBox="0 0 16 16">
+          <path
+            d="M8 2.5v7M8 2.5 5.3 5.2M8 2.5l2.7 2.7M3 10.5v2a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-2"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </symbol>
+        <symbol id="g-cards" viewBox="0 0 16 16">
+          <rect x="2" y="2.5" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/>
+          <rect x="9" y="2.5" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/>
+          <rect x="2" y="9" width="5" height="4.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/>
+          <rect x="9" y="9" width="5" height="4.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/>
+        </symbol>
+      </defs>
+    </svg>
+
+    <div class="app">
+      <!-- ====================== TOP BAR ====================== -->
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand__mark"
+            >yaml<span class="brand__dim">-</span>parther</span
+          >
+          <span class="brand__tag">parser workbench</span>
+        </div>
+
+        <!-- the three-way toggle: ONE object (radiogroup) -->
+        <div
+          class="toggle"
+          role="radiogroup"
+          aria-label="View"
+          id="view-toggle"
+        >
+          <span class="toggle__pill" aria-hidden="true"></span>
+          <button
+            class="toggle__opt"
+            role="radio"
+            data-view="tree"
+            aria-checked="true"
+            tabindex="0"
+          >
+            <svg aria-hidden="true"><use href="#g-tree" /></svg>Tree
+          </button>
+          <button
+            class="toggle__opt"
+            role="radio"
+            data-view="repl"
+            aria-checked="false"
+            tabindex="-1"
+          >
+            <svg aria-hidden="true"><use href="#g-repl" /></svg>REPL
+          </button>
+          <button
+            class="toggle__opt"
+            role="radio"
+            data-view="cards"
+            aria-checked="false"
+            tabindex="-1"
+          >
+            <svg aria-hidden="true"><use href="#g-cards" /></svg>Cards
+          </button>
+        </div>
+
+        <div class="topbar__right">
+          <div class="docstrip" id="docstrip" role="tablist" aria-label="Documents" hidden></div>
+          <button
+            class="iconbtn"
+            id="theme-btn"
+            title="Toggle light / dark"
+            aria-label="Toggle light / dark"
+          >
+            <svg aria-hidden="true"><use href="#g-sun" /></svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- ====================== STAGE (view stack) ====================== -->
+      <main class="stage" id="stage" data-view="tree">
+        <div class="shimmer" id="shimmer" hidden></div>
+
+        <!-- TREE -->
+        <section class="view" id="view-tree" aria-label="Tree view">
+          <div class="tree" id="tree-root" role="tree" aria-label="Parsed structure"></div>
+        </section>
+
+        <!-- REPL -->
+        <section class="view" id="view-repl" aria-label="REPL view" hidden>
+          <div class="repl" id="repl" data-identity="false">
+            <div class="repl__bar">
+              <span class="repl__title">prin1-to-string</span>
+              <div class="repl__controls">
+                <button class="btn" id="identity-btn" aria-pressed="false">
+                  <svg aria-hidden="true"><use href="#g-eye" /></svg>show identity
+                </button>
+                <button class="btn" id="copy-btn">
+                  <svg aria-hidden="true"><use href="#g-copy" /></svg>copy
+                </button>
+              </div>
+            </div>
+            <div class="repl__well">
+              <pre><code id="repl-code"></code></pre>
+            </div>
+          </div>
+        </section>
+
+        <!-- CARDS -->
+        <section class="view" id="view-cards" aria-label="Cards view" hidden>
+          <div class="cards" id="cards-root"></div>
+        </section>
+
+        <!-- DROPZONE overlay -->
+        <div class="dropzone" id="dropzone">
+          <div class="dropzone__inner">
+            <div class="dropzone__glyph">{ }</div>
+            <div class="dropzone__title">Drop a .yaml file to parse</div>
+            <div class="dropzone__hint">
+              or paste YAML with <kbd>⌘V</kbd> / <kbd>Ctrl V</kbd> ·
+              the Lisp parser maps it to a real CL data structure
+            </div>
+            <!-- native file picker, presented as a styled .btn. A real <label>
+                 wraps a visually-hidden <input> so it's one keyboard-operable
+                 control and routes through the SAME parse path as drop/paste. -->
+            <label class="btn btn--upload" id="upload-btn">
+              <svg aria-hidden="true"><use href="#g-upload" /></svg>
+              Choose file…
+              <input
+                type="file"
+                id="file-input"
+                accept=".yaml,.yml,.txt"
+                class="visually-hidden"
+              />
+            </label>
+          </div>
+        </div>
+
+        <!-- ERROR overlay -->
+        <div class="errorwrap" id="errorwrap" hidden aria-live="assertive"></div>
+      </main>
+
+      <!-- ====================== STATUS LINE ====================== -->
+      <footer class="statusbar" id="statusbar" aria-live="polite">
+        <span class="statusbar__seg"
+          ><span class="statusbar__k">nodes</span
+          ><span id="st-nodes">—</span></span
+        >
+        <span class="statusbar__dot">·</span>
+        <span class="statusbar__seg"
+          ><span class="statusbar__k">levels</span
+          ><span id="st-levels">—</span></span
+        >
+        <span class="statusbar__dot">·</span>
+        <span class="statusbar__seg"
+          ><span class="statusbar__k">showing</span
+          ><span id="st-showing">—</span></span
+        >
+        <span class="live" id="st-live"></span>
+      </footer>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,91 @@
+{
+  "ok": true,
+  "stats": { "nodes": 41, "levels": 7, "rendered": 41 },
+  "repl": "#<HASH-TABLE :TEST EQUAL :COUNT 2 {1005AA10}>\n;; contents (derived, not part of the printed form):\n  \"deep_nesting\" => #<HASH-TABLE :TEST EQUAL :COUNT 1 {1005AB20}>\n  \"meta\"         => #<HASH-TABLE :TEST EQUAL :COUNT 2 {1005AC30}>",
+  "_sourceYaml": "deep_nesting:\n  level1:\n    level2:\n      level3:\n        level4:\n          level5:\n            leaf: \"Reached level 5\"\n            note: \"deepest honest box is depth 3 in cards\"\nmeta:\n  built: true\n  count: 10\n",
+  "root": {
+    "type": "hash-table", "test": "EQUAL", "childCount": 2,
+    "repl": "#<HASH-TABLE :TEST EQUAL :COUNT 2 {1005AA10}>",
+    "entries": [
+      {
+        "key": { "type": "string", "value": "deep_nesting", "repl": "\"deep_nesting\"" },
+        "val": {
+          "type": "hash-table", "test": "EQUAL", "childCount": 1,
+          "repl": "#<HASH-TABLE :TEST EQUAL :COUNT 1 {1005AB20}>",
+          "entries": [
+            {
+              "key": { "type": "string", "value": "level1", "repl": "\"level1\"" },
+              "val": {
+                "type": "hash-table", "test": "EQUAL", "childCount": 1,
+                "repl": "#<HASH-TABLE :TEST EQUAL :COUNT 1 {1005AB21}>",
+                "entries": [
+                  {
+                    "key": { "type": "string", "value": "level2", "repl": "\"level2\"" },
+                    "val": {
+                      "type": "hash-table", "test": "EQUAL", "childCount": 1,
+                      "repl": "#<HASH-TABLE :TEST EQUAL :COUNT 1 {1005AB22}>",
+                      "entries": [
+                        {
+                          "key": { "type": "string", "value": "level3", "repl": "\"level3\"" },
+                          "val": {
+                            "type": "hash-table", "test": "EQUAL", "childCount": 1,
+                            "repl": "#<HASH-TABLE :TEST EQUAL :COUNT 1 {1005AB23}>",
+                            "entries": [
+                              {
+                                "key": { "type": "string", "value": "level4", "repl": "\"level4\"" },
+                                "val": {
+                                  "type": "hash-table", "test": "EQUAL", "childCount": 1,
+                                  "repl": "#<HASH-TABLE :TEST EQUAL :COUNT 1 {1005AB24}>",
+                                  "entries": [
+                                    {
+                                      "key": { "type": "string", "value": "level5", "repl": "\"level5\"" },
+                                      "val": {
+                                        "type": "hash-table", "test": "EQUAL", "childCount": 2,
+                                        "repl": "#<HASH-TABLE :TEST EQUAL :COUNT 2 {1005AB25}>",
+                                        "entries": [
+                                          {
+                                            "key": { "type": "string", "value": "leaf", "repl": "\"leaf\"" },
+                                            "val": { "type": "string", "value": "Reached level 5", "repl": "\"Reached level 5\"" }
+                                          },
+                                          {
+                                            "key": { "type": "string", "value": "note", "repl": "\"note\"" },
+                                            "val": { "type": "string", "value": "deepest honest box is depth 3 in cards", "repl": "\"deepest honest box is depth 3 in cards\"" }
+                                          }
+                                        ]
+                                      }
+                                    }
+                                  ]
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "key": { "type": "string", "value": "meta", "repl": "\"meta\"" },
+        "val": {
+          "type": "hash-table", "test": "EQUAL", "childCount": 2,
+          "repl": "#<HASH-TABLE :TEST EQUAL :COUNT 2 {1005AC30}>",
+          "entries": [
+            {
+              "key": { "type": "string", "value": "built", "repl": "\"built\"" },
+              "val": { "type": "true", "repl": "T" }
+            },
+            {
+              "key": { "type": "string", "value": "count", "repl": "\"count\"" },
+              "val": { "type": "integer", "value": 10, "lisp": "10", "repl": "10" }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

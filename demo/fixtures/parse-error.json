@@ -1,0 +1,10 @@
+{
+  "ok": false,
+  "_sourceYaml": "service:\n  name: gateway\n  ports:\n    - 80\n    - 443\n  replicas: 3\n   region: us-east-1\n  healthcheck: /status\n",
+  "error": {
+    "condition": "yaml-parse-error",
+    "message": "inconsistent indentation: expected a mapping key at the parent's level, found an over-indented token. A block mapping entry cannot be indented past its siblings.",
+    "line": 7,
+    "column": 4
+  }
+}
